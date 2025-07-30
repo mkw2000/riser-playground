@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from "react";
+import React, { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import Editor from "@monaco-editor/react";
 import { elkLayout } from "./layout/elkLayout";
 
@@ -170,12 +170,68 @@ const Line = ({
 
 /* ─────────────────────────────── main renderer ─── */
 function Riser({ spec }: { spec: Spec }) {
+  const svgRef = useRef<SVGSVGElement>(null);
+  const [transform, setTransform] = useState({ x: 0, y: 0, scale: 1 });
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
   const [layoutData, setLayoutData] = useState<Awaited<
     ReturnType<typeof elkLayout>
   > | null>(null);
   const [error, setError] = useState<string | null>(null);
   const debugGrid =
     new URLSearchParams(window.location.search).get("debugGrid") === "1";
+
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+
+    const handleWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      
+      const rect = svg.getBoundingClientRect();
+      const mouseX = e.clientX - rect.left;
+      const mouseY = e.clientY - rect.top;
+
+      const scaleFactor = e.deltaY > 0 ? 0.9 : 1.1;
+      const newScale = Math.max(0.1, Math.min(5, transform.scale * scaleFactor));
+
+      // Zoom towards mouse position
+      const scaleChange = newScale / transform.scale;
+      const newX = mouseX - (mouseX - transform.x) * scaleChange;
+      const newY = mouseY - (mouseY - transform.y) * scaleChange;
+
+      setTransform({ x: newX, y: newY, scale: newScale });
+    };
+
+    svg.addEventListener('wheel', handleWheel, { passive: false });
+    return () => svg.removeEventListener('wheel', handleWheel);
+  }, [transform]);
+
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    if (e.button === 0) { // Left click
+      setIsDragging(true);
+      setDragStart({ x: e.clientX - transform.x, y: e.clientY - transform.y });
+    }
+  }, [transform]);
+
+  const handleMouseMove = useCallback((e: React.MouseEvent) => {
+    if (isDragging) {
+      setTransform(prev => ({
+        ...prev,
+        x: e.clientX - dragStart.x,
+        y: e.clientY - dragStart.y
+      }));
+    }
+  }, [isDragging, dragStart]);
+
+  const handleMouseUp = useCallback(() => {
+    setIsDragging(false);
+  }, []);
+
+  const handleDoubleClick = useCallback(() => {
+    setTransform({ x: 0, y: 0, scale: 1 });
+  }, []);
 
   useEffect(() => {
     console.log("Starting ELK layout with spec:", spec);
@@ -290,24 +346,41 @@ function Riser({ spec }: { spec: Spec }) {
     ) : null;
 
   return (
-    <svg width={600} height={400} viewBox="0 0 300 200" className="bg-white">
-      <g className="wires">
-        {circuitPaths}
-      </g>
-      <g className="symbols">
-        {layoutData.nodes.get('panel') && 
-          SYMBOLS.FACP({ 
-            x: layoutData.nodes.get('panel')!.x, 
-            y: layoutData.nodes.get('panel')!.y 
-          })
-        }
-        {deviceNodes}
-      </g>
-      {debugOverlay}
-      <text x={10} y={195} fontSize={11}>
-        {spec.sheet.title}
-      </text>
-    </svg>
+    <div className="relative w-full h-full overflow-hidden">
+      <svg
+        ref={svgRef}
+        width="100%"
+        height="100%"
+        className="bg-white cursor-move"
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={handleMouseUp}
+        onDoubleClick={handleDoubleClick}
+      >
+        <g transform={`translate(${transform.x}, ${transform.y}) scale(${transform.scale})`}>
+          <g className="wires">
+            {circuitPaths}
+          </g>
+          <g className="symbols">
+            {layoutData.nodes.get('panel') && 
+              SYMBOLS.FACP({ 
+                x: layoutData.nodes.get('panel')!.x, 
+                y: layoutData.nodes.get('panel')!.y 
+              })
+            }
+            {deviceNodes}
+          </g>
+          {debugOverlay}
+          <text x={10} y={195} fontSize={11}>
+            {spec.sheet.title}
+          </text>
+        </g>
+      </svg>
+      <div className="absolute top-2 left-2 text-xs text-gray-600 bg-white/80 px-2 py-1 rounded">
+        Zoom: {Math.round(transform.scale * 100)}% | Double-click to reset
+      </div>
+    </div>
   );
 }
 
