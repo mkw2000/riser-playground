@@ -1,13 +1,43 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import Editor from "@monaco-editor/react";
+import { elkLayout } from "./layout/elkLayout";
 
+interface Device {
+  type: string;
+  circuit: string;
+  x: number;
+  y: number;
+}
+
+interface Circuit {
+  id: string;
+  class: string;
+  color: string;
+}
+
+interface EOL {
+  circuit: string;
+  x: number;
+  drop?: number;
+}
+
+interface Spec {
+  sheet: { title: string };
+  panel: { x: number; y: number };
+  circuits: Circuit[];
+  devices: Device[];
+  eols: EOL[];
+}
+
+/* eslint-disable no-irregular-whitespace */
 /******************************************************************************************
- * FIRE‑RISER LIVE EDITOR (v0.5)                                                          *
+ * FIRE-RISER LIVE EDITOR (v0.5)                                                          *
  * -------------------------------------------------------------------------------------- *
- *  • EOL resistor now attaches with a visible drop‑wire, not floating on the bus         *
- *  • Allows per‑circuit override of EOL drop length (defaults to 4 mm)                   *
+ *  • EOL resistor now attaches with a visible drop-wire, not floating on the bus         *
+ *  • Allows per-circuit override of EOL drop length (defaults to 4 mm)                   *
  *  • Cell stub refined to align flush with symbol bottom                                 *
  ******************************************************************************************/
+/* eslint-enable no-irregular-whitespace */
 
 /* ─────────────────────────────── symbol library ─── */
 const SYMBOLS = {
@@ -76,7 +106,7 @@ const SYMBOLS = {
 
 type SymbolKey = keyof typeof SYMBOLS;
 
-/* bottom‑edge offsets so wires stop at the symbol frame */
+/* bottom-edge offsets so wires stop at the symbol frame */
 const BOTTOM_Y: Record<SymbolKey, number> = {
   FACP: 20,
   Cell: 15,
@@ -123,71 +153,118 @@ const Line = ({
 );
 
 /* ─────────────────────────────── main renderer ─── */
-function Riser({ spec }: { spec: any }) {
+function Riser({ spec }: { spec: Spec }) {
+  const [layoutData, setLayoutData] = useState<Awaited<ReturnType<typeof elkLayout>> | null>(null);
+  const debugGrid = new URLSearchParams(window.location.search).get('debugGrid') === '1';
+
+  useEffect(() => {
+    elkLayout(spec).then(setLayoutData).catch(console.error);
+  }, [spec]);
+
+  if (!layoutData) {
+    return <div>Loading layout...</div>;
+  }
+
   /* Devices */
-  const deviceNodes = spec.devices.map((d: any, idx: number) => {
+  const deviceNodes = spec.devices.map((d: Device, idx: number) => {
     const Cmp = SYMBOLS[d.type as SymbolKey];
     return Cmp ? <Cmp key={idx} x={d.x} y={d.y} /> : null;
   });
 
-  /* Circuits */
-  const circuitsSvg = spec.circuits.map((circ: any) => {
-    const devs = spec.devices.filter((d: any) => d.circuit === circ.id);
-    if (devs.length === 0) return null;
+  /* Circuit buses from ELK edges */
+  const circuitPaths: React.ReactElement[] = [];
+  const usedEdges = new Set<string>();
+  
+  // Group edges by circuit for proper path construction
+  const edgesByCircuit = new Map<string, Array<{ id: string; source: string; target: string; bendPoints: Array<{ x: number; y: number }>; color: string }>>();
+  
+  Array.from(layoutData.edges.entries()).forEach(([id, edge]) => {
+    // Determine circuit from edge ID
+    let circuitId = null;
+    for (const circuit of spec.circuits) {
+      if (id.includes(circuit.id)) {
+        circuitId = circuit.id;
+        break;
+      }
+    }
+    
+    if (circuitId && !id.includes('panel-stub')) {
+      if (!edgesByCircuit.has(circuitId)) {
+        edgesByCircuit.set(circuitId, []);
+      }
+      edgesByCircuit.get(circuitId)!.push(edge);
+      usedEdges.add(id);
+    }
+  });
 
-    // Baseline for this circuit (below lowest device)
+  // Render circuit paths using ELK layout
+  spec.circuits.forEach((circ: Circuit) => {
+    const circuitDevices = spec.devices.filter((d: Device) => d.circuit === circ.id);
+    if (circuitDevices.length === 0) return;
+
+    // Get the baseline Y for this circuit (below lowest device)
     const lowestBottom = Math.max(
-      ...devs.map((d: any) => d.y + BOTTOM_Y[d.type as SymbolKey])
+      ...circuitDevices.map((d: Device) => d.y + BOTTOM_Y[d.type as SymbolKey])
     );
     const BUS_Y = lowestBottom + 5;
 
-    // Panel attach
+    // Panel attach point
     const panelAttach: [number, number] = [
       spec.panel.x + 20,
       spec.panel.y + BOTTOM_Y.FACP,
     ];
 
-    // Order devices left→right
-    devs.sort((a: any, b: any) => a.x - b.x);
-    const pts: number[][] = [
-      panelAttach,
-      [panelAttach[0], BUS_Y],
-      [devs[0].x, BUS_Y],
-    ];
+    // Build complete path for circuit
+    const orderedDevices = [...circuitDevices].sort((a: Device, b: Device) => a.x - b.x);
+    const allPoints: number[][] = [panelAttach, [panelAttach[0], BUS_Y]];
 
-    devs.forEach((d: any, idx: number) => {
-      const bottom = d.y + BOTTOM_Y[d.type as SymbolKey];
-      pts.push([d.x, bottom]);
-      if (idx < devs.length - 1) {
-        pts.push([d.x, BUS_Y], [devs[idx + 1].x, BUS_Y]);
+    if (orderedDevices.length > 0) {
+      // First go to the bus level at first device X
+      allPoints.push([orderedDevices[0].x, BUS_Y]);
+      
+      // Connect each device
+      orderedDevices.forEach((d: Device, idx: number) => {
+        const bottom = d.y + BOTTOM_Y[d.type as SymbolKey];
+        allPoints.push([d.x, bottom]);
+        if (idx < orderedDevices.length - 1) {
+          allPoints.push([d.x, BUS_Y], [orderedDevices[idx + 1].x, BUS_Y]);
+        }
+      });
+
+      // Handle EOL if present
+      const eol = spec.eols.find((e: EOL) => e.circuit === circ.id);
+      if (eol) {
+        const lastDevice = orderedDevices[orderedDevices.length - 1];
+        if (lastDevice) {
+          allPoints.push([lastDevice.x, BUS_Y]);
+        }
+        allPoints.push([eol.x, BUS_Y]);
       }
-    });
-
-    // Build elements (line + optional EOL stub)
-    const group: JSX.Element[] = [];
-    group.push(<Line key="bus" pts={pts} color={circ.color} />);
-
-    // EOL logic
-    const eol = spec.eols.find((e: any) => e.circuit === circ.id);
-    if (eol) {
-      const dropLen = eol.drop || 4; // can override drop length per EOL
-      const eolStubPts = [
-        [eol.x, BUS_Y],
-        [eol.x, BUS_Y + dropLen],
-      ];
-      group.push(<Line key="eol-stub" pts={eolStubPts} color={circ.color} />);
-      group.push(
-        <SYMBOLS.EOL key="eol" x={eol.x - 6} y={BUS_Y + dropLen - 3} />
-      );
     }
 
-    return <g key={circ.id}>{group}</g>;
+    circuitPaths.push(
+      <Line key={`circuit-${circ.id}`} pts={allPoints} color={circ.color} />
+    );
+
+    // EOL resistor
+    const eol = spec.eols.find((e: EOL) => e.circuit === circ.id);
+    if (eol) {
+      const dropLen = eol.drop || 4;
+      const eolStubPts = [[eol.x, BUS_Y], [eol.x, BUS_Y + dropLen]];
+      
+      circuitPaths.push(
+        <Line key={`eol-stub-${circ.id}`} pts={eolStubPts} color={circ.color} />
+      );
+      circuitPaths.push(
+        <SYMBOLS.EOL key={`eol-${circ.id}`} x={eol.x - 6} y={BUS_Y + dropLen - 3} />
+      );
+    }
   });
 
   /* Panel stubs (Cell, Annunciator) */
   const panelStubs = spec.devices
-    .filter((d: any) => d.circuit === "PANEL")
-    .map((d: any, i: number) => {
+    .filter((d: Device) => d.circuit === "PANEL")
+    .map((d: Device, i: number) => {
       const bottom = d.y + BOTTOM_Y[d.type as SymbolKey];
       return (
         <Line
@@ -201,12 +278,42 @@ function Riser({ spec }: { spec: any }) {
       );
     });
 
+  /* Debug overlay */
+  const debugOverlay = debugGrid && layoutData ? (
+    <g opacity={0.3}>
+      {Array.from(layoutData.nodes.entries()).map(([id, node]) => (
+        <rect
+          key={id}
+          x={node.x}
+          y={node.y}
+          width={node.width}
+          height={node.height}
+          fill="none"
+          stroke="blue"
+          strokeWidth={0.5}
+          strokeDasharray="2,2"
+        />
+      ))}
+      {Array.from(layoutData.edges.entries()).map(([id, edge]) => (
+        <polyline
+          key={id}
+          points={edge.bendPoints.map((p) => `${p.x},${p.y}`).join(' ')}
+          fill="none"
+          stroke="green"
+          strokeWidth={0.5}
+          strokeDasharray="1,1"
+        />
+      ))}
+    </g>
+  ) : null;
+
   return (
     <svg width={600} height={400} viewBox="0 0 300 200" className="bg-white">
-      {circuitsSvg}
+      {circuitPaths}
       {panelStubs}
       {SYMBOLS.FACP({ x: spec.panel.x, y: spec.panel.y })}
       {deviceNodes}
+      {debugOverlay}
       <text x={10} y={195} fontSize={11}>
         {spec.sheet.title}
       </text>
@@ -215,7 +322,7 @@ function Riser({ spec }: { spec: any }) {
 }
 
 /* ─────────────────────────────── App shell ─── */
-export default function App() {
+export default function App(): React.ReactElement {
   const [json, setJson] = useState<string>(defaultSpec);
   const spec = useMemo(() => {
     try {
