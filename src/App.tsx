@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useRef, useCallback, useEffect } from "react";
 import Editor from "@monaco-editor/react";
 
 /******************************************************************************************
@@ -124,6 +124,62 @@ const Line = ({
 
 /* ─────────────────────────────── main renderer ─── */
 function Riser({ spec }: { spec: any }) {
+  const svgRef = useRef<SVGSVGElement>(null);
+  const [transform, setTransform] = useState({ x: 0, y: 0, scale: 1 });
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+
+    const handleWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      
+      const rect = svg.getBoundingClientRect();
+      const mouseX = e.clientX - rect.left;
+      const mouseY = e.clientY - rect.top;
+
+      const scaleFactor = e.deltaY > 0 ? 0.9 : 1.1;
+      const newScale = Math.max(0.1, Math.min(5, transform.scale * scaleFactor));
+
+      // Zoom towards mouse position
+      const scaleChange = newScale / transform.scale;
+      const newX = mouseX - (mouseX - transform.x) * scaleChange;
+      const newY = mouseY - (mouseY - transform.y) * scaleChange;
+
+      setTransform({ x: newX, y: newY, scale: newScale });
+    };
+
+    svg.addEventListener('wheel', handleWheel, { passive: false });
+    return () => svg.removeEventListener('wheel', handleWheel);
+  }, [transform]);
+
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    if (e.button === 0) { // Left click
+      setIsDragging(true);
+      setDragStart({ x: e.clientX - transform.x, y: e.clientY - transform.y });
+    }
+  }, [transform]);
+
+  const handleMouseMove = useCallback((e: React.MouseEvent) => {
+    if (isDragging) {
+      setTransform(prev => ({
+        ...prev,
+        x: e.clientX - dragStart.x,
+        y: e.clientY - dragStart.y
+      }));
+    }
+  }, [isDragging, dragStart]);
+
+  const handleMouseUp = useCallback(() => {
+    setIsDragging(false);
+  }, []);
+
+  const handleDoubleClick = useCallback(() => {
+    setTransform({ x: 0, y: 0, scale: 1 });
+  }, []);
   /* Devices */
   const deviceNodes = spec.devices.map((d: any, idx: number) => {
     const Cmp = SYMBOLS[d.type as SymbolKey];
@@ -164,7 +220,7 @@ function Riser({ spec }: { spec: any }) {
     });
 
     // Build elements (line + optional EOL stub)
-    const group: JSX.Element[] = [];
+    const group: React.ReactElement[] = [];
     group.push(<Line key="bus" pts={pts} color={circ.color} />);
 
     // EOL logic
@@ -202,15 +258,32 @@ function Riser({ spec }: { spec: any }) {
     });
 
   return (
-    <svg width={600} height={400} viewBox="0 0 300 200" className="bg-white">
-      {circuitsSvg}
-      {panelStubs}
-      {SYMBOLS.FACP({ x: spec.panel.x, y: spec.panel.y })}
-      {deviceNodes}
-      <text x={10} y={195} fontSize={11}>
-        {spec.sheet.title}
-      </text>
-    </svg>
+    <div className="relative w-full h-full overflow-hidden">
+      <svg
+        ref={svgRef}
+        width="100%"
+        height="100%"
+        className="bg-white cursor-move"
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={handleMouseUp}
+        onDoubleClick={handleDoubleClick}
+      >
+        <g transform={`translate(${transform.x}, ${transform.y}) scale(${transform.scale})`}>
+          {circuitsSvg}
+          {panelStubs}
+          {SYMBOLS.FACP({ x: spec.panel.x, y: spec.panel.y })}
+          {deviceNodes}
+          <text x={10} y={195} fontSize={11}>
+            {spec.sheet.title}
+          </text>
+        </g>
+      </svg>
+      <div className="absolute top-2 left-2 text-xs text-gray-600 bg-white/80 px-2 py-1 rounded">
+        Zoom: {Math.round(transform.scale * 100)}% | Double-click to reset
+      </div>
+    </div>
   );
 }
 
