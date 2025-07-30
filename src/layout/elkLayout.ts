@@ -88,7 +88,7 @@ export async function elkLayout(spec: LayoutSpec): Promise<LayoutResult> {
     y: spec.panel.y,
   });
 
-  // Add device nodes with their original positions
+  // Add device nodes
   spec.devices.forEach((device, idx) => {
     const nodeId = `device-${idx}`;
     const size = SYMBOL_SIZES[device.type] || { width: 20, height: 20 };
@@ -122,7 +122,7 @@ export async function elkLayout(spec: LayoutSpec): Promise<LayoutResult> {
     }
   });
 
-  // Create simple edges: panel to each circuit device
+  // Create edges with proper sections
   spec.circuits.forEach((circuit) => {
     const circuitDevices = spec.devices
       .map((d, idx) => ({ device: d, id: `device-${idx}` }))
@@ -149,7 +149,7 @@ export async function elkLayout(spec: LayoutSpec): Promise<LayoutResult> {
     }
   });
 
-  // Panel stubs for PANEL devices  
+  // Panel stubs for PANEL devices
   const panelDevices = spec.devices
     .map((d, idx) => ({ device: d, id: `device-${idx}` }))
     .filter(({ device }) => device.circuit === 'PANEL');
@@ -164,35 +164,38 @@ export async function elkLayout(spec: LayoutSpec): Promise<LayoutResult> {
 
   console.log('Created nodes:', nodes.length, 'edges:', edges.length);
 
-  // Create ELK graph with fixed positions
+  // Try the simplest possible ELK configuration
   const graph = {
     id: 'root',
     layoutOptions: {
-      'elk.algorithm': 'org.eclipse.elk.fixed',
-      'elk.edgeRouting': 'ORTHOGONAL'
+      'elk.algorithm': 'org.eclipse.elk.layered',
+      'elk.direction': 'DOWN'
     },
     children: nodes,
     edges: edges,
   };
 
-  console.log('Calling ELK layout...');
+  console.log('Calling ELK layout with graph:', graph);
   
   let layoutedGraph: any;
   try {
     layoutedGraph = await elk.layout(graph as any);
-    console.log('ELK layout successful');
+    console.log('ELK layout successful:', layoutedGraph);
   } catch (error) {
     console.error('ELK layout failed:', error);
-    throw error;
+    
+    // Fallback: return manual layout if ELK fails
+    console.log('Falling back to manual layout');
+    return createManualLayout(spec);
   }
 
-  // Process results
+  // Process ELK results
   const result: LayoutResult = {
     nodes: new Map(),
     edges: new Map(),
   };
 
-  // Extract node positions (should be same as input for fixed algorithm)
+  // Extract node positions
   layoutedGraph.children?.forEach((node: any) => {
     result.nodes.set(node.id, {
       x: node.x ?? 0,
@@ -202,7 +205,7 @@ export async function elkLayout(spec: LayoutSpec): Promise<LayoutResult> {
     });
   });
 
-  // Extract edge routing
+  // Extract edge routing with ELK sections
   layoutedGraph.edges?.forEach((edge: any) => {
     const circuitId = edge.id.split('-')[0];
     const circuit = spec.circuits.find(c => c.id === circuitId);
@@ -210,45 +213,101 @@ export async function elkLayout(spec: LayoutSpec): Promise<LayoutResult> {
 
     const bendPoints: Array<{ x: number; y: number }> = [];
     
-    // Get source and target nodes
-    const sourceNode = result.nodes.get(edge.sources[0]);
-    const targetNode = result.nodes.get(edge.targets[0]);
-    
-    if (sourceNode && targetNode) {
-      // Simple orthogonal routing: straight down from source, then across, then down to target
-      const sourceX = sourceNode.x + sourceNode.width / 2;
-      const sourceY = sourceNode.y + sourceNode.height;
-      const targetX = targetNode.x + targetNode.width / 2;
-      const targetY = targetNode.y;
+    // Use ELK edge sections if available
+    if (edge.sections && edge.sections.length > 0) {
+      const section = edge.sections[0];
       
-      // Create orthogonal path
-      if (Math.abs(sourceX - targetX) > 5) {
-        // Need horizontal segment
-        const midY = sourceY + (targetY - sourceY) / 2;
+      if (section.startPoint) {
+        bendPoints.push(section.startPoint);
+      }
+      
+      if (section.bendPoints) {
+        bendPoints.push(...section.bendPoints);
+      }
+      
+      if (section.endPoint) {
+        bendPoints.push(section.endPoint);
+      }
+    } else {
+      // Fallback to node-based routing
+      const sourceNode = result.nodes.get(edge.sources[0]);
+      const targetNode = result.nodes.get(edge.targets[0]);
+      
+      if (sourceNode && targetNode) {
         bendPoints.push(
-          { x: sourceX, y: sourceY },
-          { x: sourceX, y: midY },
-          { x: targetX, y: midY },
-          { x: targetX, y: targetY }
-        );
-      } else {
-        // Direct vertical
-        bendPoints.push(
-          { x: sourceX, y: sourceY },
-          { x: targetX, y: targetY }
+          { x: sourceNode.x + sourceNode.width / 2, y: sourceNode.y + sourceNode.height },
+          { x: targetNode.x + targetNode.width / 2, y: targetNode.y }
         );
       }
     }
 
-    result.edges.set(edge.id, {
-      id: edge.id,
-      source: edge.sources[0],
-      target: edge.targets[0],
-      bendPoints,
-      color,
+    if (bendPoints.length > 0) {
+      result.edges.set(edge.id, {
+        id: edge.id,
+        source: edge.sources[0],
+        target: edge.targets[0],
+        bendPoints,
+        color,
+      });
+    }
+  });
+
+  console.log('ELK layout completed with', result.nodes.size, 'nodes and', result.edges.size, 'edges');
+  return result;
+}
+
+// Fallback manual layout function
+function createManualLayout(spec: LayoutSpec): LayoutResult {
+  console.log('Creating manual fallback layout');
+  
+  const result: LayoutResult = {
+    nodes: new Map(),
+    edges: new Map(),
+  };
+
+  // Add panel node
+  result.nodes.set('panel', {
+    x: spec.panel.x,
+    y: spec.panel.y,
+    width: SYMBOL_SIZES.FACP.width,
+    height: SYMBOL_SIZES.FACP.height,
+  });
+
+  // Add device nodes
+  spec.devices.forEach((device, idx) => {
+    const size = SYMBOL_SIZES[device.type] || { width: 20, height: 20 };
+    result.nodes.set(`device-${idx}`, {
+      x: device.x,
+      y: device.y,
+      width: size.width,
+      height: size.height,
     });
   });
 
-  console.log('Returning result with', result.nodes.size, 'nodes and', result.edges.size, 'edges');
+  // Simple direct connections as fallback
+  spec.circuits.forEach((circuit) => {
+    const circuitDevices = spec.devices
+      .filter(device => device.circuit === circuit.id);
+
+    circuitDevices.forEach((device, idx) => {
+      const deviceIdx = spec.devices.indexOf(device);
+      const panelX = spec.panel.x + SYMBOL_SIZES.FACP.width / 2;
+      const panelY = spec.panel.y + SYMBOL_SIZES.FACP.height;
+      const deviceX = device.x + (SYMBOL_SIZES[device.type]?.width || 20) / 2;
+      const deviceY = device.y;
+
+      result.edges.set(`${circuit.id}-${idx}`, {
+        id: `${circuit.id}-${idx}`,
+        source: 'panel',
+        target: `device-${deviceIdx}`,
+        bendPoints: [
+          { x: panelX, y: panelY },
+          { x: deviceX, y: deviceY }
+        ],
+        color: circuit.color,
+      });
+    });
+  });
+
   return result;
 }
