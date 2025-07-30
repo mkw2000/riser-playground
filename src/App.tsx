@@ -154,8 +154,11 @@ const Line = ({
 
 /* ─────────────────────────────── main renderer ─── */
 function Riser({ spec }: { spec: Spec }) {
-  const [layoutData, setLayoutData] = useState<Awaited<ReturnType<typeof elkLayout>> | null>(null);
-  const debugGrid = new URLSearchParams(window.location.search).get('debugGrid') === '1';
+  const [layoutData, setLayoutData] = useState<Awaited<
+    ReturnType<typeof elkLayout>
+  > | null>(null);
+  const debugGrid =
+    new URLSearchParams(window.location.search).get("debugGrid") === "1";
 
   useEffect(() => {
     elkLayout(spec).then(setLayoutData).catch(console.error);
@@ -173,91 +176,37 @@ function Riser({ spec }: { spec: Spec }) {
 
   /* Circuit buses from ELK edges */
   const circuitPaths: React.ReactElement[] = [];
-  const usedEdges = new Set<string>();
   
-  // Group edges by circuit for proper path construction
-  const edgesByCircuit = new Map<string, Array<{ id: string; source: string; target: string; bendPoints: Array<{ x: number; y: number }>; color: string }>>();
-  
+  // Render all edges from ELK layout
   Array.from(layoutData.edges.entries()).forEach(([id, edge]) => {
-    // Determine circuit from edge ID
-    let circuitId = null;
-    for (const circuit of spec.circuits) {
-      if (id.includes(circuit.id)) {
-        circuitId = circuit.id;
-        break;
-      }
-    }
-    
-    if (circuitId && !id.includes('panel-stub')) {
-      if (!edgesByCircuit.has(circuitId)) {
-        edgesByCircuit.set(circuitId, []);
-      }
-      edgesByCircuit.get(circuitId)!.push(edge);
-      usedEdges.add(id);
+    if (edge.bendPoints && edge.bendPoints.length >= 2) {
+      const points = edge.bendPoints.map(p => [p.x, p.y] as [number, number]);
+      circuitPaths.push(
+        <Line key={id} pts={points} color={edge.color} />
+      );
     }
   });
 
-  // Render circuit paths using ELK layout
-  spec.circuits.forEach((circ: Circuit) => {
-    const circuitDevices = spec.devices.filter((d: Device) => d.circuit === circ.id);
-    if (circuitDevices.length === 0) return;
-
-    // Get the baseline Y for this circuit (below lowest device)
-    const lowestBottom = Math.max(
-      ...circuitDevices.map((d: Device) => d.y + BOTTOM_Y[d.type as SymbolKey])
-    );
-    const BUS_Y = lowestBottom + 5;
-
-    // Panel attach point
-    const panelAttach: [number, number] = [
-      spec.panel.x + 20,
-      spec.panel.y + BOTTOM_Y.FACP,
-    ];
-
-    // Build complete path for circuit
-    const orderedDevices = [...circuitDevices].sort((a: Device, b: Device) => a.x - b.x);
-    const allPoints: number[][] = [panelAttach, [panelAttach[0], BUS_Y]];
-
-    if (orderedDevices.length > 0) {
-      // First go to the bus level at first device X
-      allPoints.push([orderedDevices[0].x, BUS_Y]);
-      
-      // Connect each device
-      orderedDevices.forEach((d: Device, idx: number) => {
-        const bottom = d.y + BOTTOM_Y[d.type as SymbolKey];
-        allPoints.push([d.x, bottom]);
-        if (idx < orderedDevices.length - 1) {
-          allPoints.push([d.x, BUS_Y], [orderedDevices[idx + 1].x, BUS_Y]);
-        }
-      });
-
-      // Handle EOL if present
-      const eol = spec.eols.find((e: EOL) => e.circuit === circ.id);
-      if (eol) {
-        const lastDevice = orderedDevices[orderedDevices.length - 1];
-        if (lastDevice) {
-          allPoints.push([lastDevice.x, BUS_Y]);
-        }
-        allPoints.push([eol.x, BUS_Y]);
+  // Render EOL resistors separately
+  spec.eols.forEach((eol: EOL) => {
+    const circuit = spec.circuits.find(c => c.id === eol.circuit);
+    if (circuit) {
+      const circuitDevices = spec.devices.filter(d => d.circuit === circuit.id);
+      if (circuitDevices.length > 0) {
+        const lowestBottom = Math.max(
+          ...circuitDevices.map(d => d.y + BOTTOM_Y[d.type as SymbolKey])
+        );
+        const busY = lowestBottom + 5;
+        const dropLen = eol.drop || 4;
+        
+        circuitPaths.push(
+          <SYMBOLS.EOL
+            key={`eol-${circuit.id}`}
+            x={eol.x - 6}
+            y={busY + dropLen - 3}
+          />
+        );
       }
-    }
-
-    circuitPaths.push(
-      <Line key={`circuit-${circ.id}`} pts={allPoints} color={circ.color} />
-    );
-
-    // EOL resistor
-    const eol = spec.eols.find((e: EOL) => e.circuit === circ.id);
-    if (eol) {
-      const dropLen = eol.drop || 4;
-      const eolStubPts = [[eol.x, BUS_Y], [eol.x, BUS_Y + dropLen]];
-      
-      circuitPaths.push(
-        <Line key={`eol-stub-${circ.id}`} pts={eolStubPts} color={circ.color} />
-      );
-      circuitPaths.push(
-        <SYMBOLS.EOL key={`eol-${circ.id}`} x={eol.x - 6} y={BUS_Y + dropLen - 3} />
-      );
     }
   });
 
@@ -279,33 +228,42 @@ function Riser({ spec }: { spec: Spec }) {
     });
 
   /* Debug overlay */
-  const debugOverlay = debugGrid && layoutData ? (
-    <g opacity={0.3}>
-      {Array.from(layoutData.nodes.entries()).map(([id, node]) => (
-        <rect
-          key={id}
-          x={node.x}
-          y={node.y}
-          width={node.width}
-          height={node.height}
-          fill="none"
-          stroke="blue"
-          strokeWidth={0.5}
-          strokeDasharray="2,2"
-        />
-      ))}
-      {Array.from(layoutData.edges.entries()).map(([id, edge]) => (
-        <polyline
-          key={id}
-          points={edge.bendPoints.map((p) => `${p.x},${p.y}`).join(' ')}
-          fill="none"
-          stroke="green"
-          strokeWidth={0.5}
-          strokeDasharray="1,1"
-        />
-      ))}
-    </g>
-  ) : null;
+  const debugOverlay =
+    debugGrid && layoutData ? (
+      <g opacity={0.3}>
+        {Array.from(layoutData.nodes.entries()).map(([id, node]) => (
+          <g key={id}>
+            <rect
+              x={node.x}
+              y={node.y}
+              width={node.width}
+              height={node.height}
+              fill="none"
+              stroke={id.startsWith('bus-') ? 'red' : 'blue'}
+              strokeWidth={0.5}
+              strokeDasharray="2,2"
+            />
+            <text x={node.x + 2} y={node.y - 2} fontSize={6} fill="blue">
+              {id}
+            </text>
+          </g>
+        ))}
+        {Array.from(layoutData.edges.entries()).map(([id, edge]) => (
+          <g key={`debug-${id}`}>
+            <polyline
+              points={edge.bendPoints.map((p) => `${p.x},${p.y}`).join(" ")}
+              fill="none"
+              stroke="green"
+              strokeWidth={0.5}
+              strokeDasharray="1,1"
+            />
+            {edge.bendPoints.map((p, i) => (
+              <circle key={i} cx={p.x} cy={p.y} r={1} fill="green" />
+            ))}
+          </g>
+        ))}
+      </g>
+    ) : null;
 
   return (
     <svg width={600} height={400} viewBox="0 0 300 200" className="bg-white">

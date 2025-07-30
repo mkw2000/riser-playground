@@ -81,7 +81,7 @@ const SYMBOL_SIZES: Record<string, { width: number; height: number }> = {
 export async function elkLayout(spec: LayoutSpec): Promise<LayoutResult> {
   const nodes: ElkNode[] = [];
   const edges: ElkEdge[] = [];
-  const nodeIdMap = new Map<string, Device | { type: string; x: number; y: number }>();
+  const nodeIdMap = new Map<string, Device | { type: string; x: number; y: number; circuit?: string }>();
   
   // Add panel as a node
   const panelId = 'panel';
@@ -93,6 +93,31 @@ export async function elkLayout(spec: LayoutSpec): Promise<LayoutResult> {
     y: spec.panel.y,
   });
   nodeIdMap.set(panelId, { type: 'FACP', x: spec.panel.x, y: spec.panel.y });
+
+  // Add virtual bus nodes for each circuit at their calculated Y positions
+  const busNodes = new Map<string, string>();
+  spec.circuits.forEach((circuit) => {
+    const circuitDevices = spec.devices.filter(d => d.circuit === circuit.id);
+    if (circuitDevices.length > 0) {
+      const lowestBottom = Math.max(
+        ...circuitDevices.map(d => d.y + (SYMBOL_SIZES[d.type]?.height || 20))
+      );
+      const busY = lowestBottom + 5;
+      const busNodeId = `bus-${circuit.id}`;
+      busNodes.set(circuit.id, busNodeId);
+      
+      // Add invisible bus node spanning the width of devices
+      const minX = Math.min(...circuitDevices.map(d => d.x));
+      const maxX = Math.max(...circuitDevices.map(d => d.x));
+      nodes.push({
+        id: busNodeId,
+        width: maxX - minX + 100, // Extra width for connections
+        height: 1,
+        x: minX - 50,
+        y: busY,
+      });
+    }
+  });
 
   // Add all devices as nodes
   spec.devices.forEach((device, idx) => {
@@ -108,83 +133,101 @@ export async function elkLayout(spec: LayoutSpec): Promise<LayoutResult> {
     nodeIdMap.set(nodeId, device);
   });
 
-  // Add EOLs as nodes
+  // Add EOLs as nodes at their bus positions
   spec.eols.forEach((eol, idx) => {
-    const nodeId = `eol-${idx}`;
-    nodes.push({
-      id: nodeId,
-      width: SYMBOL_SIZES.EOL.width,
-      height: SYMBOL_SIZES.EOL.height,
-      x: eol.x - 6, // EOL is offset in original code
-      y: 0, // Will be positioned later
-    });
-    nodeIdMap.set(nodeId, { type: 'EOL', x: eol.x, y: 0 });
+    const circuit = spec.circuits.find(c => c.id === eol.circuit);
+    if (circuit) {
+      const circuitDevices = spec.devices.filter(d => d.circuit === circuit.id);
+      if (circuitDevices.length > 0) {
+        const lowestBottom = Math.max(
+          ...circuitDevices.map(d => d.y + (SYMBOL_SIZES[d.type]?.height || 20))
+        );
+        const busY = lowestBottom + 5;
+        const dropLen = eol.drop || 4;
+        
+        const nodeId = `eol-${idx}`;
+        nodes.push({
+          id: nodeId,
+          width: SYMBOL_SIZES.EOL.width,
+          height: SYMBOL_SIZES.EOL.height,
+          x: eol.x - 6,
+          y: busY + dropLen - 3,
+        });
+        nodeIdMap.set(nodeId, { type: 'EOL', x: eol.x, y: busY + dropLen, circuit: eol.circuit });
+      }
+    }
   });
 
   // Create edges for each circuit
   spec.circuits.forEach((circuit) => {
+    const busNodeId = busNodes.get(circuit.id);
+    if (!busNodeId) return;
+
     const circuitDevices = spec.devices
       .map((d, idx) => ({ device: d, id: `device-${idx}` }))
       .filter(({ device }) => device.circuit === circuit.id)
       .sort((a, b) => a.device.x - b.device.x);
 
-    const panelDevices = spec.devices
-      .map((d, idx) => ({ device: d, id: `device-${idx}` }))
-      .filter(({ device }) => device.circuit === 'PANEL');
-
     if (circuitDevices.length > 0) {
-      // Panel to first device
+      // Panel to bus
       edges.push({
-        id: `${circuit.id}-panel-to-first`,
+        id: `${circuit.id}-panel-to-bus`,
         sources: [panelId],
-        targets: [circuitDevices[0].id],
+        targets: [busNodeId],
       });
 
-      // Connect devices in sequence
-      for (let i = 0; i < circuitDevices.length - 1; i++) {
+      // Bus to each device
+      circuitDevices.forEach((cd, idx) => {
         edges.push({
-          id: `${circuit.id}-dev-${i}-to-${i + 1}`,
-          sources: [circuitDevices[i].id],
-          targets: [circuitDevices[i + 1].id],
+          id: `${circuit.id}-bus-to-dev-${idx}`,
+          sources: [busNodeId],
+          targets: [cd.id],
         });
-      }
+      });
 
-      // Connect to EOL if exists
+      // Bus to EOL if exists
       const eol = spec.eols.find(e => e.circuit === circuit.id);
       if (eol) {
         const eolIdx = spec.eols.indexOf(eol);
-        const lastDevice = circuitDevices[circuitDevices.length - 1];
         edges.push({
-          id: `${circuit.id}-to-eol`,
-          sources: [lastDevice.id],
+          id: `${circuit.id}-bus-to-eol`,
+          sources: [busNodeId],
           targets: [`eol-${eolIdx}`],
         });
       }
     }
+  });
 
-    // Panel stubs for PANEL circuit devices
-    panelDevices.forEach((pd, idx) => {
-      edges.push({
-        id: `panel-stub-${idx}`,
-        sources: [panelId],
-        targets: [pd.id],
-      });
+  // Panel stubs for PANEL circuit devices
+  const panelDevices = spec.devices
+    .map((d, idx) => ({ device: d, id: `device-${idx}` }))
+    .filter(({ device }) => device.circuit === 'PANEL');
+  
+  panelDevices.forEach((pd, idx) => {
+    edges.push({
+      id: `panel-stub-${idx}`,
+      sources: [panelId],
+      targets: [pd.id],
     });
   });
 
-  // Configure ELK
+  // Configure ELK with fixed positions
   const graph: ElkGraph = {
     id: 'root',
     layoutOptions: {
-      'elk.algorithm': 'layered',
-      'elk.direction': 'DOWN',
-      'elk.layered.spacing.edgeNodeBetweenLayers': '10',
-      'elk.layered.spacing.nodeNodeBetweenLayers': '20',
+      'elk.algorithm': 'fixed',
       'elk.edgeRouting': 'ORTHOGONAL',
-      'elk.layered.considerModelOrder.strategy': 'PREFER_NODES',
-      'elk.layered.nodePlacement.strategy': 'SIMPLE',
+      'elk.spacing.nodeNode': '0',
+      'elk.spacing.edgeNode': '0',
+      'elk.layered.spacing.edgeNodeBetweenLayers': '0',
+      'elk.org.eclipse.elk.fixed.insets': '0',
     },
-    children: nodes,
+    children: nodes.map(node => ({
+      ...node,
+      layoutOptions: {
+        'elk.position': `(${node.x},${node.y})`,
+      }
+    })),
     edges: edges,
   };
 
