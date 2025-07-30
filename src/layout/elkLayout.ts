@@ -5,8 +5,8 @@ const elk = new ELK();
 interface Device {
   type: string;
   circuit: string;
-  x: number;
-  y: number;
+  x?: number;
+  y?: number;
 }
 
 interface Circuit {
@@ -17,13 +17,13 @@ interface Circuit {
 
 interface EOL {
   circuit: string;
-  x: number;
+  x?: number;
   drop?: number;
 }
 
 interface LayoutSpec {
   sheet: { title: string };
-  panel: { x: number; y: number };
+  panel?: { x: number; y: number };
   circuits: Circuit[];
   devices: Device[];
   eols: EOL[];
@@ -61,6 +61,7 @@ interface LayoutResult {
     target: string;
     bendPoints: Array<{ x: number; y: number }>;
     color: string;
+    circuitId: string;
   }>;
 }
 
@@ -78,17 +79,15 @@ export async function elkLayout(spec: LayoutSpec): Promise<LayoutResult> {
   const nodes: ElkNode[] = [];
   const edges: ElkEdge[] = [];
   
-  // Add panel node
+  // Add panel node (no manual positioning)
   const panelId = 'panel';
   nodes.push({
     id: panelId,
     width: SYMBOL_SIZES.FACP.width,
     height: SYMBOL_SIZES.FACP.height,
-    x: spec.panel.x,
-    y: spec.panel.y,
   });
 
-  // Add device nodes
+  // Add device nodes (no manual positioning)
   spec.devices.forEach((device, idx) => {
     const nodeId = `device-${idx}`;
     const size = SYMBOL_SIZES[device.type] || { width: 20, height: 20 };
@@ -96,55 +95,50 @@ export async function elkLayout(spec: LayoutSpec): Promise<LayoutResult> {
       id: nodeId,
       width: size.width,
       height: size.height,
-      x: device.x,
-      y: device.y,
+      labels: [{ text: device.type }],
     });
   });
 
-  // Add EOL nodes
-  spec.eols?.forEach((eol, idx) => {
-    const circuit = spec.circuits.find(c => c.id === eol.circuit);
-    if (circuit) {
-      const circuitDevices = spec.devices.filter(d => d.circuit === circuit.id);
-      const lowestBottom = circuitDevices.length > 0 
-        ? Math.max(...circuitDevices.map(d => d.y + (SYMBOL_SIZES[d.type]?.height || 20)))
-        : 100;
-      const busY = lowestBottom + 5;
-      const dropLen = eol.drop || 4;
-      
+  // Add EOL nodes for each circuit
+  spec.circuits.forEach((circuit, idx) => {
+    const eol = spec.eols?.find(e => e.circuit === circuit.id);
+    if (eol) {
       nodes.push({
-        id: `eol-${idx}`,
+        id: `eol-${circuit.id}`,
         width: SYMBOL_SIZES.EOL.width,
         height: SYMBOL_SIZES.EOL.height,
-        x: eol.x - 6,
-        y: busY + dropLen - 3,
+        labels: [{ text: 'EOL' }],
       });
     }
   });
 
-  // Create edges with proper sections
+  // Create circuit-based edges (devices in series)
   spec.circuits.forEach((circuit) => {
     const circuitDevices = spec.devices
       .map((d, idx) => ({ device: d, id: `device-${idx}` }))
       .filter(({ device }) => device.circuit === circuit.id);
 
-    // Connect panel to each device in this circuit
+    if (circuitDevices.length === 0) return;
+
+    // Create series connection: Panel -> Device1 -> Device2 -> ... -> EOL
+    let previousNode = panelId;
+    
     circuitDevices.forEach(({ id }, idx) => {
       edges.push({
         id: `${circuit.id}-${idx}`,
-        sources: [panelId],
+        sources: [previousNode],
         targets: [id],
       });
+      previousNode = id;
     });
 
-    // Connect to EOL if exists
+    // Connect last device to EOL if exists
     const eol = spec.eols?.find(e => e.circuit === circuit.id);
     if (eol) {
-      const eolIdx = spec.eols?.indexOf(eol) ?? 0;
       edges.push({
         id: `${circuit.id}-eol`,
-        sources: [panelId],
-        targets: [`eol-${eolIdx}`],
+        sources: [previousNode],
+        targets: [`eol-${circuit.id}`],
       });
     }
   });
@@ -164,12 +158,15 @@ export async function elkLayout(spec: LayoutSpec): Promise<LayoutResult> {
 
   console.log('Created nodes:', nodes.length, 'edges:', edges.length);
 
-  // Try the simplest possible ELK configuration
+  // Configure ELK for fire alarm diagram layout
   const graph = {
     id: 'root',
     layoutOptions: {
       'elk.algorithm': 'org.eclipse.elk.layered',
-      'elk.direction': 'DOWN'
+      'elk.direction': 'DOWN',
+      'elk.spacing.nodeNode': '30',
+      'elk.layered.spacing.nodeNodeBetweenLayers': '40',
+      'elk.spacing.edgeNode': '15',
     },
     children: nodes,
     edges: edges,
@@ -183,139 +180,69 @@ export async function elkLayout(spec: LayoutSpec): Promise<LayoutResult> {
     console.log('ELK layout successful:', layoutedGraph);
   } catch (error) {
     console.error('ELK layout failed:', error);
-    
-    // Fallback: return manual layout if ELK fails
-    console.log('Falling back to manual layout');
-    return createManualLayout(spec);
+    throw error;
   }
 
-  // Instead of using ELK routing results, create proper circuit buses manually
+  // Use ELK's calculated positions and edge routing
   const result: LayoutResult = {
     nodes: new Map(),
     edges: new Map(),
   };
 
-  // Use original positions for nodes (ignore ELK positioning)
-  result.nodes.set('panel', {
-    x: spec.panel.x,
-    y: spec.panel.y,
-    width: SYMBOL_SIZES.FACP.width,
-    height: SYMBOL_SIZES.FACP.height,
-  });
-
-  spec.devices.forEach((device, idx) => {
-    const size = SYMBOL_SIZES[device.type] || { width: 20, height: 20 };
-    result.nodes.set(`device-${idx}`, {
-      x: device.x,
-      y: device.y,
-      width: size.width,
-      height: size.height,
+  // Extract node positions from ELK results
+  layoutedGraph.children?.forEach((node: any) => {
+    result.nodes.set(node.id, {
+      x: node.x || 0,
+      y: node.y || 0,
+      width: node.width || 20,
+      height: node.height || 20,
     });
   });
 
-  spec.eols?.forEach((eol, idx) => {
-    const circuit = spec.circuits.find(c => c.id === eol.circuit);
-    if (circuit) {
-      const circuitDevices = spec.devices.filter(d => d.circuit === circuit.id);
-      const lowestBottom = circuitDevices.length > 0 
-        ? Math.max(...circuitDevices.map(d => d.y + (SYMBOL_SIZES[d.type]?.height || 20)))
-        : 100;
-      const busY = lowestBottom + 5;
-      const dropLen = eol.drop || 4;
-      
-      result.nodes.set(`eol-${idx}`, {
-        x: eol.x - 6,
-        y: busY + dropLen - 3,
-        width: SYMBOL_SIZES.EOL.width,
-        height: SYMBOL_SIZES.EOL.height,
+  // Extract edge routing from ELK results
+  layoutedGraph.edges?.forEach((edge: any) => {
+    const bendPoints: Array<{ x: number; y: number }> = [];
+    
+    // Add edge sections as bend points
+    if (edge.sections && edge.sections.length > 0) {
+      edge.sections.forEach((section: any) => {
+        if (section.startPoint) {
+          bendPoints.push({ x: section.startPoint.x, y: section.startPoint.y });
+        }
+        if (section.bendPoints) {
+          bendPoints.push(...section.bendPoints);
+        }
+        if (section.endPoint) {
+          bendPoints.push({ x: section.endPoint.x, y: section.endPoint.y });
+        }
       });
     }
-  });
 
-  // Create proper circuit bus routing manually
-  spec.circuits.forEach((circuit) => {
-    const circuitDevices = spec.devices
-      .filter(device => device.circuit === circuit.id)
-      .sort((a, b) => a.x - b.x);
-
-    if (circuitDevices.length === 0) return;
-
-    // Calculate bus Y level
-    const lowestBottom = Math.max(
-      ...circuitDevices.map(d => d.y + (SYMBOL_SIZES[d.type]?.height || 20))
-    );
-    const busY = lowestBottom + 5;
-    const panelX = spec.panel.x + SYMBOL_SIZES.FACP.width / 2;
-    const panelY = spec.panel.y + SYMBOL_SIZES.FACP.height;
-
-    // Create complete bus path
-    const busPoints: Array<{ x: number; y: number }> = [];
+    // Find circuit info for styling
+    let circuitId = 'unknown';
+    let dashArray;
     
-    // Start from panel
-    busPoints.push({ x: panelX, y: panelY });
-    busPoints.push({ x: panelX, y: busY });
-    
-    // Go to first device
-    const firstDeviceX = circuitDevices[0].x + (SYMBOL_SIZES[circuitDevices[0].type]?.width || 20) / 2;
-    busPoints.push({ x: firstDeviceX, y: busY });
-    
-    // Connect all devices
-    for (let i = 0; i < circuitDevices.length; i++) {
-      const device = circuitDevices[i];
-      const deviceX = device.x + (SYMBOL_SIZES[device.type]?.width || 20) / 2;
-      const deviceY = device.y;
-
-      // If not first device, add horizontal segment
-      if (i > 0) {
-        busPoints.push({ x: deviceX, y: busY });
-      }
-
-      // Add vertical drop to device
-      busPoints.push({ x: deviceX, y: deviceY });
-      // Return to bus
-      busPoints.push({ x: deviceX, y: busY });
+    if (edge.id.includes('NAC')) {
+      circuitId = 'NAC1';
+      dashArray = '3,2'; // Dashed for NAC circuits
+    } else if (edge.id.includes('SLC')) {
+      circuitId = 'SLC';
+      // SLC uses solid lines (no dashArray)
+    } else if (edge.id.includes('panel-stub')) {
+      circuitId = 'PANEL';
     }
 
-    // Connect to EOL if exists
-    const eol = spec.eols?.find(e => e.circuit === circuit.id);
-    if (eol) {
-      const dropLen = eol.drop || 4;
-      busPoints.push({ x: eol.x, y: busY });
-      busPoints.push({ x: eol.x, y: busY + dropLen });
-    }
-
-    // Create single bus edge
-    result.edges.set(`${circuit.id}-bus`, {
-      id: `${circuit.id}-bus`,
-      source: 'panel',
-      target: eol ? `eol-${spec.eols?.indexOf(eol) ?? 0}` : `device-${spec.devices.indexOf(circuitDevices[circuitDevices.length - 1])}`,
-      bendPoints: busPoints,
-      color: circuit.color,
-    });
-  });
-
-  // Panel stubs for PANEL devices
-  const directPanelDevices = spec.devices.filter(d => d.circuit === 'PANEL');
-  directPanelDevices.forEach((device, idx) => {
-    const panelX = spec.panel.x + SYMBOL_SIZES.FACP.width / 2;
-    const panelY = spec.panel.y + SYMBOL_SIZES.FACP.height;
-    const deviceX = device.x + (SYMBOL_SIZES[device.type]?.width || 20) / 2;
-    const deviceY = device.y;
-
-    result.edges.set(`panel-stub-${idx}`, {
-      id: `panel-stub-${idx}`,
-      source: 'panel',
-      target: `device-${spec.devices.indexOf(device)}`,
-      bendPoints: [
-        { x: panelX, y: panelY },
-        { x: panelX, y: deviceY },
-        { x: deviceX, y: deviceY }
-      ],
+    result.edges.set(edge.id, {
+      id: edge.id,
+      source: edge.sources?.[0] || '',
+      target: edge.targets?.[0] || '',
+      bendPoints: bendPoints,
       color: 'black',
+      circuitId: circuitId,
     });
   });
 
-  console.log('Manual circuit buses created with', result.nodes.size, 'nodes and', result.edges.size, 'edges');
+  console.log('ELK layout completed with', result.nodes.size, 'nodes and', result.edges.size, 'edges');
   return result;
 }
 
@@ -368,6 +295,7 @@ function createManualLayout(spec: LayoutSpec): LayoutResult {
           { x: deviceX, y: deviceY }
         ],
         color: circuit.color,
+        circuitId: circuit.id,
       });
     });
   });
