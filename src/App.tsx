@@ -157,12 +157,31 @@ function Riser({ spec }: { spec: Spec }) {
   const [layoutData, setLayoutData] = useState<Awaited<
     ReturnType<typeof elkLayout>
   > | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const debugGrid =
     new URLSearchParams(window.location.search).get("debugGrid") === "1";
 
   useEffect(() => {
-    elkLayout(spec).then(setLayoutData).catch(console.error);
+    console.log('Starting ELK layout with spec:', spec);
+    setError(null);
+    setLayoutData(null);
+    
+    elkLayout(spec)
+      .then((data) => {
+        console.log('ELK layout completed:', data);
+        setLayoutData(data);
+        setError(null);
+      })
+      .catch((error) => {
+        console.error('ELK layout error:', error);
+        setError(error.message || 'ELK layout failed');
+        setLayoutData(null);
+      });
   }, [spec]);
+
+  if (error) {
+    return <div style={{color: 'red'}}>ELK Layout Error: {error}</div>;
+  }
 
   if (!layoutData) {
     return <div>Loading layout...</div>;
