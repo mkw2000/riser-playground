@@ -12,6 +12,7 @@
 | Canvas            | **SVG** via lightweight JSX                   | Crisp vectors, scales to PDF/DWG.                                    |
 | Editor            | **Monaco Editor**                             | VS Code‑grade JSON editing with linting & IntelliSense hooks.        |
 | Symbols           | Tiny bespoke lib (see `SYMBOLS` in `App.tsx`) | Add/adjust icons in one place.                                       |
+| Layout engine     | **ELK.js**                                    | Auto-routes orthogonal circuit buses with proper bend points.        |
 | Wiring engine     | Vanilla math inside `Riser()`                 | Determines bus lines, drops, EOL placement.                          |
 | Styling           | **Tailwind CSS**                              | Utility classes keep markup terse.                                   |
 | Export (optional) | `svgexport` CLI                               | SVG → PDF at true scale (e.g. `2970:2100` pixels ≈ 200 mm × 140 mm). |
@@ -121,6 +122,24 @@ The editor instantly reloads – just reference `"type": "HS"` in your JSON.
 | 🔲     | Unit tests on routing engine                   |
 
 Contributions welcome – open a PR or issue!
+
+---
+
+## ⚙️ ELK.js Layout Configuration
+
+The application uses ELK.js for automatic orthogonal routing of circuit buses. To tune the layout algorithm, modify the options in `src/layout/elkLayout.ts`:
+
+```typescript
+layoutOptions: {
+  'elk.algorithm': 'layered',               // Main layout algorithm
+  'elk.direction': 'DOWN',                  // Layout direction
+  'elk.layered.spacing.edgeNodeBetweenLayers': '10',  // Vertical spacing
+  'elk.layered.spacing.nodeNodeBetweenLayers': '20',  // Horizontal spacing
+  'elk.edgeRouting': 'ORTHOGONAL',        // Ensures 90° angles only
+}
+```
+
+**Debug mode**: Add `?debugGrid=1` to the URL to overlay ELK's node/edge bounding boxes for troubleshooting layout issues.
 
 ---
 

@@ -1,13 +1,42 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import Editor from "@monaco-editor/react";
+import { elkLayout } from "./layout/elkLayout";
 
+interface Device {
+  type: string;
+  circuit: string;
+  x?: number;
+  y?: number;
+}
+
+interface Circuit {
+  id: string;
+  class: string;
+  color: string;
+}
+interface EOL {
+  circuit: string;
+  x?: number;
+  drop?: number;
+}
+
+interface Spec {
+  sheet: { title: string };
+  panel?: { x: number; y: number };
+  circuits: Circuit[];
+  devices: Device[];
+  eols: EOL[];
+}
+
+/* eslint-disable no-irregular-whitespace */
 /******************************************************************************************
- * FIRE‑RISER LIVE EDITOR (v0.5)                                                          *
+ * FIRE-RISER LIVE EDITOR (v0.5)                                                          *
  * -------------------------------------------------------------------------------------- *
- *  • EOL resistor now attaches with a visible drop‑wire, not floating on the bus         *
- *  • Allows per‑circuit override of EOL drop length (defaults to 4 mm)                   *
+ *  • EOL resistor now attaches with a visible drop-wire, not floating on the bus         *
+ *  • Allows per-circuit override of EOL drop length (defaults to 4 mm)                   *
  *  • Cell stub refined to align flush with symbol bottom                                 *
  ******************************************************************************************/
+/* eslint-enable no-irregular-whitespace */
 
 /* ─────────────────────────────── symbol library ─── */
 const SYMBOLS = {
@@ -72,36 +101,50 @@ const SYMBOLS = {
       <polyline points="0,0 2,-3 4,3 6,-3 8,3 10,-3 12,0" strokeWidth={0.6} />
     </g>
   ),
+  HornStrobe: ({ x, y }: { x: number; y: number }) => (
+    <g transform={`translate(${x} ${y})`} className="stroke-black fill-none">
+      {/* Horn speaker triangle */}
+      <polygon points="2,2 10,2 6,8" strokeWidth={0.8} />
+      {/* Rounded square base */}
+      <rect x={1} y={8} width={10} height={10} rx={2} strokeWidth={0.8} />
+      {/* Center circle */}
+      <circle cx={6} cy={13} r={2} strokeWidth={0.8} />
+      {/* Cross pattern inside circle */}
+      <line x1={4.5} y1={11.5} x2={7.5} y2={14.5} strokeWidth={0.6} />
+      <line x1={7.5} y1={11.5} x2={4.5} y2={14.5} strokeWidth={0.6} />
+    </g>
+  ),
+
 } as const;
 
 type SymbolKey = keyof typeof SYMBOLS;
 
-/* bottom‑edge offsets so wires stop at the symbol frame */
+/* bottom-edge offsets so wires stop at the symbol frame */
 const BOTTOM_Y: Record<SymbolKey, number> = {
   FACP: 20,
   Cell: 15,
   Smoke: 14,
   Pull: 12,
   EOL: 0,
+  HornStrobe: 18,
 };
 
 /* ─────────────────────────────── starter JSON ─── */
 const defaultSpec = `{
   "sheet": { "title": "FIRST FLOOR" },
-  "panel": { "x": 100, "y": 40 },
   "circuits": [
     { "id": "SLC",  "class": "B", "color": "black" },
-    { "id": "NAC1", "class": "B", "color": "red" }
+    { "id": "NAC1", "class": "B", "color": "black" }
   ],
   "devices": [
-    { "type": "Cell",  "circuit": "PANEL", "x": 130, "y": 20 },
-    { "type": "Smoke", "circuit": "SLC",   "x": 30,  "y": 100 },
-    { "type": "Pull",  "circuit": "SLC",   "x": 60,  "y": 100 },
-    { "type": "Pull",  "circuit": "NAC1",  "x": 140, "y": 100 }
+    { "type": "Cell",  "circuit": "PANEL" },
+    { "type": "HornStrobe", "circuit": "NAC1" },
+    { "type": "Smoke", "circuit": "SLC" },
+    { "type": "Pull",  "circuit": "SLC" }
   ],
   "eols": [
-    { "circuit": "SLC",  "x": 60 },
-    { "circuit": "NAC1", "x": 155 }
+    { "circuit": "NAC1" },
+    { "circuit": "SLC" }
   ]
 }`;
 
@@ -109,104 +152,158 @@ const defaultSpec = `{
 const Line = ({
   pts,
   color = "black",
+  dashArray,
 }: {
   pts: number[][];
   color?: string;
+  dashArray?: string;
 }) => (
   <polyline
     points={pts.map(([x, y]) => `${x},${y}`).join(" ")}
     fill="none"
     stroke={color}
     strokeWidth={0.6}
+    strokeDasharray={dashArray}
     vectorEffect="non-scaling-stroke"
   />
 );
 
 /* ─────────────────────────────── main renderer ─── */
-function Riser({ spec }: { spec: any }) {
+function Riser({ spec }: { spec: Spec }) {
+  const [layoutData, setLayoutData] = useState<Awaited<
+    ReturnType<typeof elkLayout>
+  > | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const debugGrid =
+    new URLSearchParams(window.location.search).get("debugGrid") === "1";
+
+  useEffect(() => {
+    console.log("Starting ELK layout with spec:", spec);
+    setError(null);
+    setLayoutData(null);
+
+    elkLayout(spec)
+      .then((data) => {
+        console.log("ELK layout completed:", data);
+        setLayoutData(data);
+        setError(null);
+      })
+      .catch((error) => {
+        console.error("ELK layout error:", error);
+        setError(error.message || "ELK layout failed");
+        setLayoutData(null);
+      });
+  }, [spec]);
+
+  if (error) {
+    return <div style={{ color: "red" }}>ELK Layout Error: {error}</div>;
+  }
+
+  if (!layoutData) {
+    return <div>Loading layout...</div>;
+  }
+
   /* Devices */
-  const deviceNodes = spec.devices.map((d: any, idx: number) => {
+  const deviceNodes = spec.devices.map((d: Device, idx: number) => {
+    const nodeData = layoutData.nodes.get(`device-${idx}`);
+    if (!nodeData) return null;
     const Cmp = SYMBOLS[d.type as SymbolKey];
-    return Cmp ? <Cmp key={idx} x={d.x} y={d.y} /> : null;
+    return Cmp ? <Cmp key={idx} x={nodeData.x} y={nodeData.y} /> : null;
   });
 
-  /* Circuits */
-  const circuitsSvg = spec.circuits.map((circ: any) => {
-    const devs = spec.devices.filter((d: any) => d.circuit === circ.id);
-    if (devs.length === 0) return null;
+  /* Circuit buses from ELK edges */
+  const circuitPaths: React.ReactElement[] = [];
 
-    // Baseline for this circuit (below lowest device)
-    const lowestBottom = Math.max(
-      ...devs.map((d: any) => d.y + BOTTOM_Y[d.type as SymbolKey])
-    );
-    const BUS_Y = lowestBottom + 5;
-
-    // Panel attach
-    const panelAttach: [number, number] = [
-      spec.panel.x + 20,
-      spec.panel.y + BOTTOM_Y.FACP,
-    ];
-
-    // Order devices left→right
-    devs.sort((a: any, b: any) => a.x - b.x);
-    const pts: number[][] = [
-      panelAttach,
-      [panelAttach[0], BUS_Y],
-      [devs[0].x, BUS_Y],
-    ];
-
-    devs.forEach((d: any, idx: number) => {
-      const bottom = d.y + BOTTOM_Y[d.type as SymbolKey];
-      pts.push([d.x, bottom]);
-      if (idx < devs.length - 1) {
-        pts.push([d.x, BUS_Y], [devs[idx + 1].x, BUS_Y]);
+  // Render all edges from ELK layout
+  Array.from(layoutData.edges.entries()).forEach(([id, edge]) => {
+    if (edge.bendPoints && edge.bendPoints.length >= 2) {
+      const points = edge.bendPoints.map((p) => [p.x, p.y] as [number, number]);
+      
+      // Determine dash pattern based on circuit type
+      let dashArray;
+      if (edge.circuitId === 'NAC1' || edge.circuitId?.startsWith('NAC')) {
+        dashArray = "3,2"; // Dashed for NAC circuits
       }
-    });
-
-    // Build elements (line + optional EOL stub)
-    const group: JSX.Element[] = [];
-    group.push(<Line key="bus" pts={pts} color={circ.color} />);
-
-    // EOL logic
-    const eol = spec.eols.find((e: any) => e.circuit === circ.id);
-    if (eol) {
-      const dropLen = eol.drop || 4; // can override drop length per EOL
-      const eolStubPts = [
-        [eol.x, BUS_Y],
-        [eol.x, BUS_Y + dropLen],
-      ];
-      group.push(<Line key="eol-stub" pts={eolStubPts} color={circ.color} />);
-      group.push(
-        <SYMBOLS.EOL key="eol" x={eol.x - 6} y={BUS_Y + dropLen - 3} />
-      );
-    }
-
-    return <g key={circ.id}>{group}</g>;
-  });
-
-  /* Panel stubs (Cell, Annunciator) */
-  const panelStubs = spec.devices
-    .filter((d: any) => d.circuit === "PANEL")
-    .map((d: any, i: number) => {
-      const bottom = d.y + BOTTOM_Y[d.type as SymbolKey];
-      return (
-        <Line
-          key={`stub-${i}`}
-          pts={[
-            [spec.panel.x + 20, spec.panel.y],
-            [spec.panel.x + 20, bottom],
-            [d.x + 15, bottom],
-          ]}
+      // SLC and other circuits use solid lines (no dashArray)
+      
+      circuitPaths.push(
+        <Line 
+          key={id} 
+          pts={points} 
+          color="black" 
+          dashArray={dashArray}
         />
       );
-    });
+    }
+  });
+
+  // Render EOL resistors from ELK layout
+  spec.circuits.forEach((circuit) => {
+    const eolNode = layoutData.nodes.get(`eol-${circuit.id}`);
+    if (eolNode) {
+      circuitPaths.push(
+        <SYMBOLS.EOL
+          key={`eol-${circuit.id}`}
+          x={eolNode.x}
+          y={eolNode.y}
+        />
+      );
+    }
+  });
+
+  /* Debug overlay */
+  const debugOverlay =
+    debugGrid && layoutData ? (
+      <g opacity={0.3}>
+        {Array.from(layoutData.nodes.entries()).map(([id, node]) => (
+          <g key={id}>
+            <rect
+              x={node.x}
+              y={node.y}
+              width={node.width}
+              height={node.height}
+              fill="none"
+              stroke={id.startsWith("bus-") ? "red" : "blue"}
+              strokeWidth={0.5}
+              strokeDasharray="2,2"
+            />
+            <text x={node.x + 2} y={node.y - 2} fontSize={6} fill="blue">
+              {id}
+            </text>
+          </g>
+        ))}
+        {Array.from(layoutData.edges.entries()).map(([id, edge]) => (
+          <g key={`debug-${id}`}>
+            <polyline
+              points={edge.bendPoints.map((p) => `${p.x},${p.y}`).join(" ")}
+              fill="none"
+              stroke="green"
+              strokeWidth={0.5}
+              strokeDasharray="1,1"
+            />
+            {edge.bendPoints.map((p, i) => (
+              <circle key={i} cx={p.x} cy={p.y} r={1} fill="green" />
+            ))}
+          </g>
+        ))}
+      </g>
+    ) : null;
 
   return (
     <svg width={600} height={400} viewBox="0 0 300 200" className="bg-white">
-      {circuitsSvg}
-      {panelStubs}
-      {SYMBOLS.FACP({ x: spec.panel.x, y: spec.panel.y })}
-      {deviceNodes}
+      <g className="wires">
+        {circuitPaths}
+      </g>
+      <g className="symbols">
+        {layoutData.nodes.get('panel') && 
+          SYMBOLS.FACP({ 
+            x: layoutData.nodes.get('panel')!.x, 
+            y: layoutData.nodes.get('panel')!.y 
+          })
+        }
+        {deviceNodes}
+      </g>
+      {debugOverlay}
       <text x={10} y={195} fontSize={11}>
         {spec.sheet.title}
       </text>
@@ -215,7 +312,7 @@ function Riser({ spec }: { spec: any }) {
 }
 
 /* ─────────────────────────────── App shell ─── */
-export default function App() {
+export default function App(): React.ReactElement {
   const [json, setJson] = useState<string>(defaultSpec);
   const spec = useMemo(() => {
     try {
