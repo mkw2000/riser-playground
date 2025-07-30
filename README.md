@@ -6,16 +6,16 @@
 
 ## ✨ What’s inside
 
-| Layer             | Tech                                          | Why                                                                  |
-| ----------------- | --------------------------------------------- | -------------------------------------------------------------------- |
-| UI                | **React 18 + Vite**                           | Fast HMR for live preview.                                           |
-| Canvas            | **SVG** via lightweight JSX                   | Crisp vectors, scales to PDF/DWG.                                    |
-| Editor            | **Monaco Editor**                             | VS Code‑grade JSON editing with linting & IntelliSense hooks.        |
-| Symbols           | Tiny bespoke lib (see `SYMBOLS` in `App.tsx`) | Add/adjust icons in one place.                                       |
-| Layout engine     | **ELK.js**                                    | Auto-routes orthogonal circuit buses with proper bend points.        |
-| Wiring engine     | Vanilla math inside `Riser()`                 | Determines bus lines, drops, EOL placement.                          |
-| Styling           | **Tailwind CSS**                              | Utility classes keep markup terse.                                   |
-| Export (optional) | `svgexport` CLI                               | SVG → PDF at true scale (e.g. `2970:2100` pixels ≈ 200 mm × 140 mm). |
+| Layer             | Tech                                          | Why                                                                   |
+| ----------------- | --------------------------------------------- | --------------------------------------------------------------------- |
+| UI                | **React 18 + Vite**                           | Fast HMR for live preview.                                            |
+| Canvas            | **SVG** via lightweight JSX                   | Crisp vectors, scales to PDF/DWG.                                     |
+| Editor            | **Monaco Editor**                             | VS Code‑grade JSON editing with linting & IntelliSense hooks.         |
+| Symbols           | Tiny bespoke lib (see `SYMBOLS` in `App.tsx`) | Add/adjust icons in one place.                                        |
+| Layout engine     | **ELK.js**                                    | Auto-routes orthogonal circuit buses with proper bend points.         |
+| Wiring engine     | **ELK.js** with custom routing logic          | Auto-routes circuit buses with proper orthogonal paths and EOL drops. |
+| Styling           | **Tailwind CSS**                              | Utility classes keep markup terse.                                    |
+| Export (optional) | `svgexport` CLI                               | SVG → PDF at true scale (e.g. `2970:2100` pixels ≈ 200 mm × 140 mm).  |
 
 ---
 
