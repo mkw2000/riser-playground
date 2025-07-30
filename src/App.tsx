@@ -171,7 +171,7 @@ const Line = ({
 /* ─────────────────────────────── main renderer ─── */
 function Riser({ spec }: { spec: Spec }) {
   const svgRef = useRef<SVGSVGElement>(null);
-  const [transform, setTransform] = useState({ x: 0, y: 0, scale: 1 });
+  const [transform, setTransform] = useState({ x: 0, y: 0, scale: 3 });
   const [isDragging, setIsDragging] = useState(false);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
   const [layoutData, setLayoutData] = useState<Awaited<
@@ -180,6 +180,42 @@ function Riser({ spec }: { spec: Spec }) {
   const [error, setError] = useState<string | null>(null);
   const debugGrid =
     new URLSearchParams(window.location.search).get("debugGrid") === "1";
+
+  // Calculate initial scale and position to center the drawing
+  const calculateInitialTransform = useCallback(() => {
+    if (!svgRef.current || !layoutData) return;
+    
+    const svg = svgRef.current;
+    const rect = svg.getBoundingClientRect();
+    const viewportWidth = rect.width;
+    const viewportHeight = rect.height;
+    
+    // Find bounds of all nodes
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    
+    layoutData.nodes.forEach(node => {
+      minX = Math.min(minX, node.x);
+      minY = Math.min(minY, node.y);
+      maxX = Math.max(maxX, node.x + node.width);
+      maxY = Math.max(maxY, node.y + node.height);
+    });
+    
+    // Add some padding around the content
+    const padding = 50;
+    const contentWidth = maxX - minX + padding * 2;
+    const contentHeight = maxY - minY + padding * 2;
+    
+    // Calculate scale to fit content in viewport with some margin
+    const scaleX = (viewportWidth * 0.8) / contentWidth;
+    const scaleY = (viewportHeight * 0.8) / contentHeight;
+    const scale = Math.min(scaleX, scaleY, 5); // Cap at 5x zoom
+    
+    // Center the content
+    const centerX = (viewportWidth - contentWidth * scale) / 2 - (minX - padding) * scale;
+    const centerY = (viewportHeight - contentHeight * scale) / 2 - (minY - padding) * scale;
+    
+    setTransform({ x: centerX, y: centerY, scale });
+  }, [layoutData]);
 
   useEffect(() => {
     const svg = svgRef.current;
@@ -230,8 +266,8 @@ function Riser({ spec }: { spec: Spec }) {
   }, []);
 
   const handleDoubleClick = useCallback(() => {
-    setTransform({ x: 0, y: 0, scale: 1 });
-  }, []);
+    calculateInitialTransform();
+  }, [calculateInitialTransform]);
 
   useEffect(() => {
     console.log("Starting ELK layout with spec:", spec);
@@ -250,6 +286,14 @@ function Riser({ spec }: { spec: Spec }) {
         setLayoutData(null);
       });
   }, [spec]);
+
+  // Auto-center and scale when layout data changes
+  useEffect(() => {
+    if (layoutData) {
+      // Small delay to ensure SVG is rendered
+      setTimeout(calculateInitialTransform, 100);
+    }
+  }, [layoutData, calculateInitialTransform]);
 
   if (error) {
     return <div style={{ color: "red" }}>ELK Layout Error: {error}</div>;
