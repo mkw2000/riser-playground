@@ -1,0 +1,54 @@
+{
+  "testSuite": "PDF Export Functionality",
+  "timestamp": "2025-07-30T22:49:06.590Z",
+  "testUrl": "http://localhost:5174/",
+  "results": {
+    "initialLoad": {
+      "success": true,
+      "loadTime": 2624,
+      "timestamp": "2025-07-30T22:48:30.947Z"
+    },
+    "diagramLoad": {
+      "success": true,
+      "symbolCount": 5,
+      "wireCount": 8,
+      "title": "FACP",
+      "timestamp": "2025-07-30T22:48:31.055Z"
+    },
+    "exportTrigger": {
+      "success": true,
+      "exportTime": 237,
+      "timestamp": "2025-07-30T22:48:31.296Z"
+    },
+    "downloadSuccess": {
+      "success": true,
+      "filename": "FIRST_FLOOR_riser_diagram.pdf",
+      "filePath": "/Users/mkw/Desktop/riser-playground/test-downloads/FIRST_FLOOR_riser_diagram.pdf",
+      "fileSize": 5873,
+      "fileSizeKB": 6,
+      "timestamp": "2025-07-30T22:48:31.296Z"
+    },
+    "pdfQuality": {
+      "success": true,
+      "validHeader": true,
+      "fileSize": 5873,
+      "hasObjects": true,
+      "hasStream": true,
+      "timestamp": "2025-07-30T22:48:31.296Z"
+    },
+    "performance": {
+      "success": true,
+      "iterations": 3,
+      "times": [
+        42,
+        40,
+        43
+      ],
+      "averageTime": 42,
+      "minTime": 40,
+      "maxTime": 43,
+      "timestamp": "2025-07-30T22:48:34.450Z"
+    },
+    "errors": []
+  }
+}
