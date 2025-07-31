@@ -1,6 +1,10 @@
 import React, { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import Editor from "@monaco-editor/react";
 import { elkLayout } from "./layout/elkLayout";
+import jsPDF from "jspdf";
+import { svg2pdf } from "svg2pdf.js";
+// @ts-ignore
+import DxfWriter from "dxf-writer";
 
 interface Device {
   type: string;
@@ -120,14 +124,14 @@ const SYMBOLS = {
 type SymbolKey = keyof typeof SYMBOLS;
 
 /* bottom-edge offsets so wires stop at the symbol frame */
-const BOTTOM_Y: Record<SymbolKey, number> = {
-  FACP: 20,
-  Cell: 15,
-  Smoke: 14,
-  Pull: 12,
-  EOL: 0,
-  HornStrobe: 18,
-};
+// const BOTTOM_Y: Record<SymbolKey, number> = {
+//   FACP: 20,
+//   Cell: 15,
+//   Smoke: 14,
+//   Pull: 12,
+//   EOL: 0,
+//   HornStrobe: 18,
+// };
 
 /* ─────────────────────────────── starter JSON ─── */
 const defaultSpec = `{
@@ -169,7 +173,7 @@ const Line = ({
 );
 
 /* ─────────────────────────────── main renderer ─── */
-function Riser({ spec }: { spec: Spec }) {
+function Riser({ spec, onExportDXF }: { spec: Spec; onExportDXF?: (layoutData: any) => void }) {
   const svgRef = useRef<SVGSVGElement>(null);
   const [transform, setTransform] = useState({ x: 0, y: 0, scale: 3 });
   const [isDragging, setIsDragging] = useState(false);
@@ -292,8 +296,12 @@ function Riser({ spec }: { spec: Spec }) {
     if (layoutData) {
       // Small delay to ensure SVG is rendered
       setTimeout(calculateInitialTransform, 100);
+      // Pass layout data to parent for DXF export
+      if (onExportDXF) {
+        onExportDXF(layoutData);
+      }
     }
-  }, [layoutData, calculateInitialTransform]);
+  }, [layoutData, calculateInitialTransform, onExportDXF]);
 
   if (error) {
     return <div style={{ color: "red" }}>ELK Layout Error: {error}</div>;
@@ -416,7 +424,7 @@ function Riser({ spec }: { spec: Spec }) {
             {deviceNodes}
           </g>
           {debugOverlay}
-          <text x={10} y={195} fontSize={11}>
+          <text x={400} y={250} fontSize={14} textAnchor="middle" fontWeight="bold">
             {spec.sheet.title}
           </text>
         </g>
@@ -439,8 +447,250 @@ export default function App(): React.ReactElement {
     }
   }, [json]);
 
+  const exportToPDF = useCallback(async () => {
+    if (!spec) return;
+    
+    try {
+      // Find the SVG element
+      const svgElement = document.querySelector('svg');
+      if (!svgElement) {
+        console.error('SVG element not found');
+        return;
+      }
+
+      // Clone the SVG to avoid modifying the original
+      const svgClone = svgElement.cloneNode(true) as SVGSVGElement;
+      
+      // Clean up the SVG for export - remove transform attributes that might cause issues
+      const transformedGroup = svgClone.querySelector('g[transform]');
+      if (transformedGroup) {
+        // Apply the transform to get the actual coordinates
+        const transform = transformedGroup.getAttribute('transform') || '';
+        const match = transform.match(/translate\(([^,]+),\s*([^)]+)\)\s*scale\(([^)]+)\)/);
+        
+        if (match) {
+          const [, translateX, translateY, scale] = match;
+          const tx = parseFloat(translateX);
+          const ty = parseFloat(translateY);
+          const s = parseFloat(scale);
+          
+          // Remove the transform attribute
+          transformedGroup.removeAttribute('transform');
+          
+          // Apply the transformation to all child elements
+          const allElements = transformedGroup.querySelectorAll('*');
+          allElements.forEach((element) => {
+            if (element.tagName === 'g' && element.getAttribute('transform')) {
+              const childTransform = element.getAttribute('transform') || '';
+              const translateMatch = childTransform.match(/translate\(([^,]+),\s*([^)]+)\)/);
+              if (translateMatch) {
+                const [, x, y] = translateMatch;
+                const newX = parseFloat(x) * s + tx;
+                const newY = parseFloat(y) * s + ty;
+                element.setAttribute('transform', `translate(${newX}, ${newY}) scale(${s})`);
+              }
+            }
+          });
+        }
+      }
+
+      // Set proper SVG dimensions for PDF
+      const bbox = svgClone.getBBox ? svgClone.getBBox() : { x: 0, y: 0, width: 400, height: 300 };
+      const padding = 20;
+      const svgWidth = bbox.width + padding * 2;
+      const svgHeight = bbox.height + padding * 2;
+      
+      svgClone.setAttribute('width', svgWidth.toString());
+      svgClone.setAttribute('height', svgHeight.toString());
+      svgClone.setAttribute('viewBox', `${bbox.x - padding} ${bbox.y - padding} ${svgWidth} ${svgHeight}`);
+
+      // Create PDF in landscape orientation
+      const pdf = new jsPDF('l', 'mm', 'a4');
+      
+      // Convert SVG to PDF using svg2pdf.js
+      await svg2pdf(svgClone, pdf, {
+        x: 10,
+        y: 10,
+        width: 277, // A4 landscape width minus margins
+        height: 190, // A4 landscape height minus margins
+      });
+      
+      // Add title below the diagram
+      const title = spec.sheet?.title || 'Fire Riser Diagram';
+      pdf.setFontSize(14);
+      pdf.text(title, 10, 210);
+      
+      // Add export timestamp
+      pdf.setFontSize(8);
+      pdf.text(`Exported: ${new Date().toLocaleString()}`, 10, 220);
+      
+      // Save the PDF
+      pdf.save(`${title.replace(/\s+/g, '_')}_riser_diagram.pdf`);
+      
+    } catch (error) {
+      console.error('Error exporting PDF:', error);
+      alert(`PDF export failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }, [spec]);
+
+  const [currentLayoutData, setCurrentLayoutData] = useState<any>(null);
+
+  const handleLayoutData = useCallback((layoutData: any) => {
+    setCurrentLayoutData(layoutData);
+  }, []);
+
+  const exportToDXFBlocks = useCallback(() => {
+    if (!spec || !currentLayoutData) return;
+
+    try {
+      const scale = 0.5;
+      let dxfContent = '0\nSECTION\n2\nHEADER\n0\nENDSEC\n0\nSECTION\n2\nBLOCKS\n';
+      
+      // Define FACP block
+      dxfContent += '0\nBLOCK\n8\nBLOCKS\n2\nFACP\n70\n0\n10\n0.0\n20\n0.0\n30\n0.0\n';
+      dxfContent += '0\nLINE\n8\n0\n10\n0.0\n20\n0.0\n30\n0.0\n11\n20.0\n21\n0.0\n31\n0.0\n';
+      dxfContent += '0\nLINE\n8\n0\n10\n20.0\n20\n0.0\n30\n0.0\n11\n20.0\n21\n-10.0\n31\n0.0\n';
+      dxfContent += '0\nLINE\n8\n0\n10\n20.0\n20\n-10.0\n30\n0.0\n11\n0.0\n21\n-10.0\n31\n0.0\n';
+      dxfContent += '0\nLINE\n8\n0\n10\n0.0\n20\n-10.0\n30\n0.0\n11\n0.0\n21\n0.0\n31\n0.0\n';
+      dxfContent += '0\nTEXT\n8\n0\n10\n10.0\n20\n-5.0\n30\n0.0\n40\n3.0\n72\n1\n11\n10.0\n21\n-5.0\n31\n0.0\n1\nFACP\n';
+      dxfContent += '0\nENDBLK\n8\nBLOCKS\n';
+      
+      // Define Cell block
+      dxfContent += '0\nBLOCK\n8\nBLOCKS\n2\nCELL\n70\n0\n10\n0.0\n20\n0.0\n30\n0.0\n';
+      dxfContent += '0\nLINE\n8\n0\n10\n0.0\n20\n0.0\n30\n0.0\n11\n15.0\n21\n0.0\n31\n0.0\n';
+      dxfContent += '0\nLINE\n8\n0\n10\n15.0\n20\n0.0\n30\n0.0\n11\n15.0\n21\n-7.5\n31\n0.0\n';
+      dxfContent += '0\nLINE\n8\n0\n10\n15.0\n20\n-7.5\n30\n0.0\n11\n0.0\n21\n-7.5\n31\n0.0\n';
+      dxfContent += '0\nLINE\n8\n0\n10\n0.0\n20\n-7.5\n30\n0.0\n11\n0.0\n21\n0.0\n31\n0.0\n';
+      dxfContent += '0\nTEXT\n8\n0\n10\n7.5\n20\n-3.75\n30\n0.0\n40\n2.0\n72\n1\n11\n7.5\n21\n-3.75\n31\n0.0\n1\nCELL\n';
+      dxfContent += '0\nENDBLK\n8\nBLOCKS\n';
+      
+      // Define Pull Station block
+      dxfContent += '0\nBLOCK\n8\nBLOCKS\n2\nPULL\n70\n0\n10\n0.0\n20\n0.0\n30\n0.0\n';
+      dxfContent += '0\nLINE\n8\n0\n10\n0.0\n20\n0.0\n30\n0.0\n11\n6.0\n21\n0.0\n31\n0.0\n';
+      dxfContent += '0\nLINE\n8\n0\n10\n6.0\n20\n0.0\n30\n0.0\n11\n6.0\n21\n-6.0\n31\n0.0\n';
+      dxfContent += '0\nLINE\n8\n0\n10\n6.0\n20\n-6.0\n30\n0.0\n11\n0.0\n21\n-6.0\n31\n0.0\n';
+      dxfContent += '0\nLINE\n8\n0\n10\n0.0\n20\n-6.0\n30\n0.0\n11\n0.0\n21\n0.0\n31\n0.0\n';
+      dxfContent += '0\nTEXT\n8\n0\n10\n3.0\n20\n-3.0\n30\n0.0\n40\n2.0\n72\n1\n11\n3.0\n21\n-3.0\n31\n0.0\n1\nPULL\n';
+      dxfContent += '0\nENDBLK\n8\nBLOCKS\n';
+      
+      // Define Smoke Detector block
+      dxfContent += '0\nBLOCK\n8\nBLOCKS\n2\nSMOKE\n70\n0\n10\n0.0\n20\n0.0\n30\n0.0\n';
+      dxfContent += '0\nCIRCLE\n8\n0\n10\n7.0\n20\n-7.0\n30\n0.0\n40\n7.0\n';
+      dxfContent += '0\nTEXT\n8\n0\n10\n7.0\n20\n-7.0\n30\n0.0\n40\n2.0\n72\n1\n11\n7.0\n21\n-7.0\n31\n0.0\n1\nS\n';
+      dxfContent += '0\nENDBLK\n8\nBLOCKS\n';
+      
+      // Define Horn/Strobe block
+      dxfContent += '0\nBLOCK\n8\nBLOCKS\n2\nHORNSTROBE\n70\n0\n10\n0.0\n20\n0.0\n30\n0.0\n';
+      dxfContent += '0\nLINE\n8\n0\n10\n2.0\n20\n-2.0\n30\n0.0\n11\n10.0\n21\n-2.0\n31\n0.0\n';
+      dxfContent += '0\nLINE\n8\n0\n10\n10.0\n20\n-2.0\n30\n0.0\n11\n6.0\n21\n-8.0\n31\n0.0\n';
+      dxfContent += '0\nLINE\n8\n0\n10\n6.0\n20\n-8.0\n30\n0.0\n11\n2.0\n21\n-2.0\n31\n0.0\n';
+      dxfContent += '0\nLINE\n8\n0\n10\n1.0\n20\n-8.0\n30\n0.0\n11\n11.0\n21\n-8.0\n31\n0.0\n';
+      dxfContent += '0\nLINE\n8\n0\n10\n11.0\n20\n-8.0\n30\n0.0\n11\n11.0\n21\n-18.0\n31\n0.0\n';
+      dxfContent += '0\nLINE\n8\n0\n10\n11.0\n20\n-18.0\n30\n0.0\n11\n1.0\n21\n-18.0\n31\n0.0\n';
+      dxfContent += '0\nLINE\n8\n0\n10\n1.0\n20\n-18.0\n30\n0.0\n11\n1.0\n21\n-8.0\n31\n0.0\n';
+      dxfContent += '0\nCIRCLE\n8\n0\n10\n6.0\n20\n-13.0\n30\n0.0\n40\n2.0\n';
+      dxfContent += '0\nLINE\n8\n0\n10\n4.5\n20\n-11.5\n30\n0.0\n11\n7.5\n21\n-14.5\n31\n0.0\n';
+      dxfContent += '0\nLINE\n8\n0\n10\n7.5\n20\n-11.5\n30\n0.0\n11\n4.5\n21\n-14.5\n31\n0.0\n';
+      dxfContent += '0\nTEXT\n8\n0\n10\n6.0\n20\n-9.0\n30\n0.0\n40\n1.5\n72\n1\n11\n6.0\n21\n-9.0\n31\n0.0\n1\nHS\n';
+      dxfContent += '0\nENDBLK\n8\nBLOCKS\n';
+      
+      // Define EOL block
+      dxfContent += '0\nBLOCK\n8\nBLOCKS\n2\nEOL\n70\n0\n10\n0.0\n20\n0.0\n30\n0.0\n';
+      const eolPoints = [0, 0, 2, -3, 4, 3, 6, -3, 8, 3, 10, -3, 12, 0];
+      for (let i = 0; i < eolPoints.length - 2; i += 2) {
+        dxfContent += `0\nLINE\n8\n0\n10\n${eolPoints[i].toFixed(1)}\n20\n${eolPoints[i + 1].toFixed(1)}\n30\n0.0\n11\n${eolPoints[i + 2].toFixed(1)}\n21\n${eolPoints[i + 3].toFixed(1)}\n31\n0.0\n`;
+      }
+      dxfContent += '0\nENDBLK\n8\nBLOCKS\n';
+      
+      dxfContent += '0\nENDSEC\n0\nSECTION\n2\nENTITIES\n';
+      
+      // Draw circuit lines
+      for (const [, edge] of currentLayoutData.edges.entries()) {
+        if (edge.bendPoints && edge.bendPoints.length >= 2) {
+          const points = edge.bendPoints;
+          for (let i = 0; i < points.length - 1; i++) {
+            dxfContent += `0\nLINE\n8\nCIRCUITS\n10\n${(points[i].x * scale).toFixed(3)}\n20\n${(-points[i].y * scale).toFixed(3)}\n30\n0.0\n11\n${(points[i + 1].x * scale).toFixed(3)}\n21\n${(-points[i + 1].y * scale).toFixed(3)}\n31\n0.0\n`;
+          }
+        }
+      }
+
+      // Insert FACP panel block
+      const panelNode = currentLayoutData.nodes.get('panel');
+      if (panelNode) {
+        const x = panelNode.x * scale;
+        const y = -panelNode.y * scale;
+        dxfContent += `0\nINSERT\n8\nPANEL\n2\nFACP\n10\n${x.toFixed(3)}\n20\n${y.toFixed(3)}\n30\n0.0\n41\n${scale.toFixed(3)}\n42\n${scale.toFixed(3)}\n43\n${scale.toFixed(3)}\n50\n0.0\n`;
+      }
+
+      // Insert device blocks
+      spec.devices.forEach((device: Device, idx: number) => {
+        const nodeData = currentLayoutData.nodes.get(`device-${idx}`);
+        if (!nodeData) return;
+
+        const x = nodeData.x * scale;
+        const y = -nodeData.y * scale;
+        
+        let blockName = '';
+        let layerName = '';
+        
+        switch (device.type) {
+          case 'Cell':
+            blockName = 'CELL';
+            layerName = 'DEVICES';
+            break;
+          case 'Pull':
+            blockName = 'PULL';
+            layerName = 'DEVICES';
+            break;
+          case 'Smoke':
+            blockName = 'SMOKE';
+            layerName = 'DEVICES';
+            break;
+          case 'HornStrobe':
+            blockName = 'HORNSTROBE';
+            layerName = 'DEVICES';
+            break;
+          default:
+            return;
+        }
+        
+        dxfContent += `0\nINSERT\n8\n${layerName}\n2\n${blockName}\n10\n${x.toFixed(3)}\n20\n${y.toFixed(3)}\n30\n0.0\n41\n${scale.toFixed(3)}\n42\n${scale.toFixed(3)}\n43\n${scale.toFixed(3)}\n50\n0.0\n`;
+      });
+
+      // Insert EOL blocks
+      spec.circuits.forEach((circuit: Circuit) => {
+        const eolNode = currentLayoutData.nodes.get(`eol-${circuit.id}`);
+        if (eolNode) {
+          const x = eolNode.x * scale;
+          const y = -eolNode.y * scale;
+          dxfContent += `0\nINSERT\n8\nEOL\n2\nEOL\n10\n${x.toFixed(3)}\n20\n${y.toFixed(3)}\n30\n0.0\n41\n${scale.toFixed(3)}\n42\n${scale.toFixed(3)}\n43\n${scale.toFixed(3)}\n50\n0.0\n`;
+        }
+      });
+
+      // Add title
+      const title = spec.sheet?.title || 'Fire Riser Diagram';
+      dxfContent += `0\nTEXT\n8\nTITLE\n10\n10.0\n20\n-100.0\n30\n0.0\n40\n5.0\n72\n0\n11\n10.0\n21\n-100.0\n31\n0.0\n1\n${title}\n`;
+      dxfContent += '0\nENDSEC\n0\nEOF';
+
+      // Download
+      const blob = new Blob([dxfContent], { type: 'application/dxf' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${title.replace(/\s+/g, '_')}_blocks_riser_diagram.dxf`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+
+    } catch (error) {
+      console.error('Error exporting DXF:', error);
+    }
+  }, [spec, currentLayoutData]);
+
+
   return (
-    <div className="h-screen grid grid-cols-2">
+    <div className="h-screen grid grid-cols-2 overflow-hidden">
       <Editor
         height="100%"
         defaultLanguage="json"
@@ -451,9 +701,25 @@ export default function App(): React.ReactElement {
         className="border-r"
       />
 
-      <div className="flex items-center justify-center p-4 bg-gray-50 overflow-auto">
+      <div className="relative flex items-center justify-center p-4 bg-gray-50 overflow-hidden">
+        {spec && (
+          <div className="absolute top-4 right-4 z-10 flex gap-2">
+            <button
+              onClick={exportToPDF}
+              className="export-button bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg shadow-lg transition-colors duration-200 text-sm font-medium"
+            >
+              Export to PDF
+            </button>
+            <button
+              onClick={exportToDXFBlocks}
+              className="export-button bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg shadow-lg transition-colors duration-200 text-sm font-medium"
+            >
+              Export to DXF
+            </button>
+          </div>
+        )}
         {spec ? (
-          <Riser spec={spec} />
+          <Riser spec={spec} onExportDXF={handleLayoutData} />
         ) : (
           <p className="text-red-600">JSON parse error</p>
         )}
