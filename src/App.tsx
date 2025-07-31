@@ -168,12 +168,15 @@ const Line = ({
   pts,
   color = "black",
   dashArray,
+  id,
 }: {
   pts: number[][];
   color?: string;
   dashArray?: string;
+  id?: string;
 }) => (
   <polyline
+    id={id}
     points={pts.map(([x, y]) => `${x},${y}`).join(" ")}
     fill="none"
     stroke={color}
@@ -361,7 +364,7 @@ function Riser({
   const circuitPaths: React.ReactElement[] = [];
 
   // Render all edges from ELK layout
-  Array.from(layoutData.edges.entries()).forEach(([id, edge]) => {
+  Array.from(layoutData.edges.entries()).forEach(([id, edge], index) => {
     if (edge.bendPoints && edge.bendPoints.length >= 2) {
       const points = edge.bendPoints.map((p) => [p.x, p.y] as [number, number]);
 
@@ -372,8 +375,17 @@ function Riser({
       }
       // SLC and other circuits use solid lines (no dashArray)
 
+      // Generate edge ID
+      const edgeId = `edge-${edge.circuitId || 'unknown'}-${index}`;
+
       circuitPaths.push(
-        <Line key={id} pts={points} color="black" dashArray={dashArray} />
+        <Line 
+          key={id} 
+          pts={points} 
+          color="black" 
+          dashArray={dashArray} 
+          id={edgeId}
+        />
       );
     }
   });
