@@ -431,6 +431,10 @@ function Riser({ spec }: { spec: Spec }) {
 /* ─────────────────────────────── App shell ─── */
 export default function App(): React.ReactElement {
   const [json, setJson] = useState<string>(defaultSpec);
+  const [splitRatio, setSplitRatio] = useState<number>(50); // Percentage for editor width
+  const containerRef = useRef<HTMLDivElement>(null);
+  const isDragging = useRef(false);
+  
   const spec = useMemo(() => {
     try {
       return JSON.parse(json);
@@ -439,24 +443,64 @@ export default function App(): React.ReactElement {
     }
   }, [json]);
 
-  return (
-    <div className="h-screen grid grid-cols-2">
-      <Editor
-        height="100%"
-        defaultLanguage="json"
-        value={json}
-        onChange={(v) => setJson(v ?? "")}
-        theme="vs-dark"
-        options={{ minimap: { enabled: false } }}
-        className="border-r"
-      />
+  // Handle mouse events for dragging the divider
+  const handleMouseDown = (e: React.MouseEvent) => {
+    e.preventDefault();
+    isDragging.current = true;
+    
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isDragging.current || !containerRef.current) return;
+      
+      const containerRect = containerRef.current.getBoundingClientRect();
+      const xPos = e.clientX - containerRect.left;
+      const percentage = Math.max(10, Math.min(90, (xPos / containerRect.width) * 100));
+      setSplitRatio(percentage);
+    };
+    
+    const handleMouseUp = () => {
+      isDragging.current = false;
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+    
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+  };
 
-      <div className="flex items-center justify-center p-4 bg-gray-50 overflow-auto">
-        {spec ? (
-          <Riser spec={spec} />
-        ) : (
-          <p className="text-red-600">JSON parse error</p>
-        )}
+  return (
+    <div 
+      ref={containerRef}
+      className="h-screen w-screen flex"
+      style={{ cursor: isDragging.current ? 'col-resize' : 'default' }}
+    >
+      <div style={{ width: `${splitRatio}%` }} className="h-full">
+        <Editor
+          height="100%"
+          defaultLanguage="json"
+          value={json}
+          onChange={(v) => setJson(v ?? "")}
+          theme="vs-dark"
+          options={{ minimap: { enabled: false } }}
+          className="h-full"
+        />
+      </div>
+      
+      {/* Draggable divider */}
+      <div 
+        className="w-2 bg-gray-300 hover:bg-blue-400 cursor-col-resize flex items-center justify-center"
+        onMouseDown={handleMouseDown}
+      >
+        <div className="w-1 h-10 bg-gray-500 rounded"></div>
+      </div>
+      
+      <div style={{ width: `${100 - splitRatio}%` }} className="h-full bg-gray-50 overflow-auto">
+        <div className="w-full h-full flex items-center justify-center p-4">
+          {spec ? (
+            <Riser spec={spec} />
+          ) : (
+            <p className="text-red-600">JSON parse error</p>
+          )}
+        </div>
       </div>
     </div>
   );
