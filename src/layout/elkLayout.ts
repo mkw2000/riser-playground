@@ -29,6 +29,11 @@ interface LayoutSpec {
   eols: EOL[];
 }
 
+interface ElkPort {
+  id: string;
+  layoutOptions?: Record<string, any>;
+}
+
 interface ElkNode {
   id: string;
   width: number;
@@ -36,6 +41,8 @@ interface ElkNode {
   x?: number;
   y?: number;
   labels?: Array<{ text: string }>;
+  layoutOptions?: Record<string, any>;
+  ports?: ElkPort[];
 }
 
 interface ElkEdgeSection {
@@ -48,6 +55,8 @@ interface ElkEdge {
   id: string;
   sources: string[];
   targets: string[];
+  sourcePort?: string;
+  targetPort?: string;
   labels?: Array<{ text: string }>;
   sections?: ElkEdgeSection[];
 }
@@ -70,6 +79,7 @@ const SYMBOL_SIZES: Record<string, { width: number; height: number }> = {
   Cell: { width: 30, height: 15 },
   Smoke: { width: 14, height: 14 },
   Pull: { width: 12, height: 12 },
+  HornStrobe: { width: 12, height: 18 },
   EOL: { width: 12, height: 6 },
 };
 
@@ -79,18 +89,40 @@ export async function elkLayout(spec: LayoutSpec): Promise<LayoutResult> {
   const nodes: ElkNode[] = [];
   const edges: ElkEdge[] = [];
   
-  // Add panel node (no manual positioning)
+  // Add panel node with ports for different circuit sides
   const panelId = 'panel';
   nodes.push({
     id: panelId,
     width: SYMBOL_SIZES.FACP.width,
     height: SYMBOL_SIZES.FACP.height,
+    labels: [{ text: 'FACP' }],
+    ports: [
+      {
+        id: 'panel-left',
+        layoutOptions: {
+          'elk.port.side': 'WEST'
+        }
+      },
+      {
+        id: 'panel-right', 
+        layoutOptions: {
+          'elk.port.side': 'EAST'
+        }
+      },
+      {
+        id: 'panel-top',
+        layoutOptions: {
+          'elk.port.side': 'NORTH'
+        }
+      }
+    ]
   });
 
-  // Add device nodes (no manual positioning)
+  // Add device nodes
   spec.devices.forEach((device, idx) => {
     const nodeId = `device-${idx}`;
     const size = SYMBOL_SIZES[device.type] || { width: 20, height: 20 };
+    
     nodes.push({
       id: nodeId,
       width: size.width,
@@ -100,7 +132,7 @@ export async function elkLayout(spec: LayoutSpec): Promise<LayoutResult> {
   });
 
   // Add EOL nodes for each circuit
-  spec.circuits.forEach((circuit, idx) => {
+  spec.circuits.forEach((circuit) => {
     const eol = spec.eols?.find(e => e.circuit === circuit.id);
     if (eol) {
       nodes.push({
@@ -112,7 +144,7 @@ export async function elkLayout(spec: LayoutSpec): Promise<LayoutResult> {
     }
   });
 
-  // Create circuit-based edges (devices in series)
+  // Create series connections for each circuit using specific ports
   spec.circuits.forEach((circuit) => {
     const circuitDevices = spec.devices
       .map((d, idx) => ({ device: d, id: `device-${idx}` }))
@@ -120,16 +152,33 @@ export async function elkLayout(spec: LayoutSpec): Promise<LayoutResult> {
 
     if (circuitDevices.length === 0) return;
 
-    // Create series connection: Panel -> Device1 -> Device2 -> ... -> EOL
+    // Determine which panel port to use based on circuit type
+    let panelPort = 'panel-top'; // default
+    if (circuit.id.startsWith('NAC')) {
+      panelPort = 'panel-left';
+    } else if (circuit.id === 'SLC') {
+      panelPort = 'panel-right';
+    }
+
+    // Create series connection: Panel port -> Device1 -> Device2 -> ... -> EOL
     let previousNode = panelId;
+    let previousPort = panelPort;
     
     circuitDevices.forEach(({ id }, idx) => {
-      edges.push({
+      const edge: any = {
         id: `${circuit.id}-${idx}`,
         sources: [previousNode],
         targets: [id],
-      });
+      };
+      
+      // Add source port if this is the first connection from panel
+      if (previousNode === panelId && previousPort) {
+        edge.sourcePort = previousPort;
+      }
+      
+      edges.push(edge);
       previousNode = id;
+      previousPort = ''; // subsequent connections don't need ports
     });
 
     // Connect last device to EOL if exists
@@ -143,7 +192,7 @@ export async function elkLayout(spec: LayoutSpec): Promise<LayoutResult> {
     }
   });
 
-  // Panel stubs for PANEL devices
+  // Panel stubs for PANEL devices using top port
   const panelCircuitDevices = spec.devices
     .map((d, idx) => ({ device: d, id: `device-${idx}` }))
     .filter(({ device }) => device.circuit === 'PANEL');
@@ -153,20 +202,23 @@ export async function elkLayout(spec: LayoutSpec): Promise<LayoutResult> {
       id: `panel-stub-${idx}`,
       sources: [panelId],
       targets: [id],
+      sourcePort: 'panel-top',
     });
   });
 
   console.log('Created nodes:', nodes.length, 'edges:', edges.length);
 
-  // Configure ELK for fire alarm diagram layout
+  // Configure ELK for fire alarm diagram layout with directional hints
   const graph = {
     id: 'root',
     layoutOptions: {
       'elk.algorithm': 'org.eclipse.elk.layered',
-      'elk.direction': 'DOWN',
+      'elk.direction': 'RIGHT',
       'elk.spacing.nodeNode': '30',
-      'elk.layered.spacing.nodeNodeBetweenLayers': '40',
-      'elk.spacing.edgeNode': '15',
+      'elk.layered.spacing.nodeNodeBetweenLayers': '50',
+      'elk.spacing.edgeNode': '20',
+      'elk.layered.crossingMinimization.strategy': 'LAYER_SWEEP',
+      'elk.layered.nodePlacement.strategy': 'BRANDES_KOEPF',
     },
     children: nodes,
     edges: edges,
@@ -183,7 +235,7 @@ export async function elkLayout(spec: LayoutSpec): Promise<LayoutResult> {
     throw error;
   }
 
-  // Use ELK's calculated positions and edge routing
+  // Extract layout results from ELK
   const result: LayoutResult = {
     nodes: new Map(),
     edges: new Map(),
@@ -220,14 +272,11 @@ export async function elkLayout(spec: LayoutSpec): Promise<LayoutResult> {
 
     // Find circuit info for styling
     let circuitId = 'unknown';
-    let dashArray;
     
     if (edge.id.includes('NAC')) {
       circuitId = 'NAC1';
-      dashArray = '3,2'; // Dashed for NAC circuits
     } else if (edge.id.includes('SLC')) {
       circuitId = 'SLC';
-      // SLC uses solid lines (no dashArray)
     } else if (edge.id.includes('panel-stub')) {
       circuitId = 'PANEL';
     }
@@ -246,59 +295,3 @@ export async function elkLayout(spec: LayoutSpec): Promise<LayoutResult> {
   return result;
 }
 
-// Fallback manual layout function
-function createManualLayout(spec: LayoutSpec): LayoutResult {
-  console.log('Creating manual fallback layout');
-  
-  const result: LayoutResult = {
-    nodes: new Map(),
-    edges: new Map(),
-  };
-
-  // Add panel node
-  result.nodes.set('panel', {
-    x: spec.panel.x,
-    y: spec.panel.y,
-    width: SYMBOL_SIZES.FACP.width,
-    height: SYMBOL_SIZES.FACP.height,
-  });
-
-  // Add device nodes
-  spec.devices.forEach((device, idx) => {
-    const size = SYMBOL_SIZES[device.type] || { width: 20, height: 20 };
-    result.nodes.set(`device-${idx}`, {
-      x: device.x,
-      y: device.y,
-      width: size.width,
-      height: size.height,
-    });
-  });
-
-  // Simple direct connections as fallback
-  spec.circuits.forEach((circuit) => {
-    const circuitDevices = spec.devices
-      .filter(device => device.circuit === circuit.id);
-
-    circuitDevices.forEach((device, idx) => {
-      const deviceIdx = spec.devices.indexOf(device);
-      const panelX = spec.panel.x + SYMBOL_SIZES.FACP.width / 2;
-      const panelY = spec.panel.y + SYMBOL_SIZES.FACP.height;
-      const deviceX = device.x + (SYMBOL_SIZES[device.type]?.width || 20) / 2;
-      const deviceY = device.y;
-
-      result.edges.set(`${circuit.id}-${idx}`, {
-        id: `${circuit.id}-${idx}`,
-        source: 'panel',
-        target: `device-${deviceIdx}`,
-        bendPoints: [
-          { x: panelX, y: panelY },
-          { x: deviceX, y: deviceY }
-        ],
-        color: circuit.color,
-        circuitId: circuit.id,
-      });
-    });
-  });
-
-  return result;
-}

@@ -24,3 +24,5 @@ dist-ssr
 *.sw?
 
 .claude/*
+./test-downloads/*
+./test-screenshots/*
