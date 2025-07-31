@@ -431,6 +431,9 @@ function Riser({ spec }: { spec: Spec }) {
 /* ─────────────────────────────── App shell ─── */
 export default function App(): React.ReactElement {
   const [json, setJson] = useState<string>(defaultSpec);
+  const [dividerPosition, setDividerPosition] = useState<number>(50);
+  const [isResizing, setIsResizing] = useState<boolean>(false);
+  
   const spec = useMemo(() => {
     try {
       return JSON.parse(json);
@@ -439,19 +442,71 @@ export default function App(): React.ReactElement {
     }
   }, [json]);
 
-  return (
-    <div className="h-screen grid grid-cols-2">
-      <Editor
-        height="100%"
-        defaultLanguage="json"
-        value={json}
-        onChange={(v) => setJson(v ?? "")}
-        theme="vs-dark"
-        options={{ minimap: { enabled: false } }}
-        className="border-r"
-      />
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsResizing(true);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  }, []);
 
-      <div className="flex items-center justify-center p-4 bg-gray-50 overflow-auto">
+  const handleMouseMove = useCallback((e: MouseEvent) => {
+    if (!isResizing) return;
+    
+    const container = document.getElementById('app-container');
+    if (!container) return;
+    
+    const rect = container.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const percentage = Math.max(20, Math.min(80, (x / rect.width) * 100));
+    setDividerPosition(percentage);
+  }, [isResizing]);
+
+  const handleMouseUp = useCallback(() => {
+    setIsResizing(false);
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+  }, []);
+
+  useEffect(() => {
+    if (isResizing) {
+      document.addEventListener('mousemove', handleMouseMove);
+      document.addEventListener('mouseup', handleMouseUp);
+    } else {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    }
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isResizing, handleMouseMove, handleMouseUp]);
+
+  return (
+    <div id="app-container" className="h-screen flex">
+      <div style={{ width: `${dividerPosition}%` }} className="h-full">
+        <Editor
+          height="100%"
+          defaultLanguage="json"
+          value={json}
+          onChange={(v) => setJson(v ?? "")}
+          theme="vs-dark"
+          options={{ minimap: { enabled: false } }}
+          className="border-r"
+        />
+      </div>
+
+      <div
+        className="w-1 bg-gray-300 hover:bg-blue-500 transition-colors cursor-col-resize relative"
+        onMouseDown={handleMouseDown}
+        title="Drag to resize"
+      >
+        <div className="absolute inset-0 flex items-center justify-center">
+          <div className="w-1 h-8 bg-gray-500 rounded-full"></div>
+        </div>
+      </div>
+
+      <div style={{ width: `${100 - dividerPosition}%` }} className="flex items-center justify-center p-4 bg-gray-50 overflow-auto">
         {spec ? (
           <Riser spec={spec} />
         ) : (
