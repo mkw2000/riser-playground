@@ -4,40 +4,22 @@ import React, {
   useEffect,
   useRef,
   useCallback,
+  type JSX,
 } from "react";
 import Editor from "@monaco-editor/react";
-import { elkLayout } from "./layout/elkLayout";
+import { layout } from "./layout/layoutHub";
+import type { Device, Circuit, EOL, LayoutSpec } from "./layout/elkLayout";
 // import { tscircuitLayout } from "./layout/tscircuitLayout";
 import jsPDF from "jspdf";
 import { svg2pdf } from "svg2pdf.js";
-// @ts-ignore
-import DxfWriter from "dxf-writer";
+// dxf-writer import removed - not used in current implementation
 
-interface Device {
-  type: string;
-  circuit: string;
-  x?: number;
-  y?: number;
-}
 
-interface Circuit {
-  id: string;
-  class: string;
-  color: string;
-}
-interface EOL {
-  circuit: string;
-  x?: number;
-  drop?: number;
-}
+// Import the DSL types
+import type { DSLSpec } from "./layout/dslCompiler";
 
-interface Spec {
-  sheet: { title: string };
-  panel?: { x: number; y: number };
-  circuits: Circuit[];
-  devices: Device[];
-  eols: EOL[];
-}
+// Union type for both legacy and DSL spec formats
+type Spec = DSLSpec | LayoutSpec;
 
 /* eslint-disable no-irregular-whitespace */
 /******************************************************************************************
@@ -141,26 +123,42 @@ type SymbolKey = keyof typeof SYMBOLS;
 
 /* ─────────────────────────────── starter JSON ─── */
 const defaultSpec = `{
-  "sheet": { "title": "FIRST FLOOR" },
+  "sheet": { "title": "FIRST FLOOR", "laneGap": 28 },
+  "panel": {
+    "id": "FACP",
+    "ports": [
+      { "id": "SLC",  "side": "WEST", "label": "SLC" },
+      { "id": "NAC1", "side": "EAST", "label": "NAC 1" }
+    ]
+  },
   "circuits": [
-    { "id": "SLC",  "class": "B", "color": "black" },
-    { "id": "NAC1", "class": "B", "color": "black" }
+    {
+      "id": "SLC",
+      "from": { "panel": "FACP", "port": "SLC" },
+      "orientation": "WEST",
+      "spacing": 36,
+      "devices": [
+        { "type": "Smoke" }, { "type": "Smoke" }, { "type": "Pull" }
+      ],
+      "endcap": { "type": "EOL", "value": "75Ω" }
+    },
+    {
+      "id": "NAC1",
+      "from": { "panel": "FACP", "port": "NAC1" },
+      "orientation": "EAST",
+      "spacing": 36,
+      "devices": [
+        { "type": "HornStrobe" }, { "type": "HornStrobe" }
+      ],
+      "endcap": { "type": "EOL", "value": "75Ω" }
+    }
   ],
-  "devices": [
-    { "type": "Cell",  "circuit": "PANEL" },
-    { "type": "HornStrobe", "circuit": "NAC1" },
-    { "type": "Smoke", "circuit": "SLC" },
-    { "type": "Smoke", "circuit": "SLC" },
-    { "type": "Smoke", "circuit": "SLC" },
-    { "type": "Smoke", "circuit": "SLC" },
-    { "type": "Pull",  "circuit": "SLC" },
-    { "type": "Pull",  "circuit": "SLC" }
-
-  ],
-  "eols": [
-    { "circuit": "NAC1" },
-    { "circuit": "SLC" }
-  ]
+  "symbols": {
+    "Smoke":      { "w": 18, "h": 18 },
+    "Pull":       { "w": 14, "h": 14 },
+    "HornStrobe": { "w": 22, "h": 16 },
+    "EOL":        { "w": 18, "h": 12 }
+  }
 }`;
 
 /* ─────────────────────────────── primitives ─── */
@@ -189,14 +187,14 @@ function Riser({
   onExportDXF,
 }: {
   spec: Spec;
-  onExportDXF?: (layoutData: any) => void;
+  onExportDXF?: (layoutData: Awaited<ReturnType<typeof layout>>) => void;
 }) {
   const svgRef = useRef<SVGSVGElement>(null);
   const [transform, setTransform] = useState({ x: 0, y: 0, scale: 3 });
   const [isDragging, setIsDragging] = useState(false);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
   const [layoutData, setLayoutData] = useState<Awaited<
-    ReturnType<typeof elkLayout>
+    ReturnType<typeof layout>
   > | null>(null);
   const [error, setError] = useState<string | null>(null);
   const debugGrid =
@@ -313,7 +311,7 @@ function Riser({
     setError(null);
     setLayoutData(null);
 
-    const layoutFunction = elkLayout;
+    const layoutFunction = layout;
     const layoutName = "ELK";
 
     layoutFunction(spec)
@@ -349,13 +347,47 @@ function Riser({
     return <div>Loading layout...</div>;
   }
 
+  // Determine if this is DSL format or legacy format
+  const isDSLFormat = 'symbols' in spec;
+  
   /* Devices */
-  const deviceNodes = spec.devices.map((d: Device, idx: number) => {
-    const nodeData = layoutData.nodes.get(`device-${idx}`);
-    if (!nodeData) return null;
-    const Cmp = SYMBOLS[d.type as SymbolKey];
-    return Cmp ? <Cmp key={idx} x={nodeData.x} y={nodeData.y} /> : null;
-  });
+  let deviceNodes: JSX.Element[] = [];
+  
+  if (isDSLFormat) {
+    // DSL format: devices are in circuit chains
+    spec.circuits.forEach((circuit) => {
+      circuit.devices.forEach((device, deviceIdx) => {
+        const nodeId = `circuit-${circuit.id}-device-${deviceIdx}`;
+        const nodeData = layoutData.nodes.get(nodeId);
+        if (!nodeData) return;
+        
+        // Map DSL device types to existing SYMBOLS
+        const deviceType = device.type === 'Pull' ? 'Pull' : 
+                          device.type === 'Smoke' ? 'Smoke' : 
+                          device.type === 'HornStrobe' ? 'HornStrobe' : 'Cell';
+        const Cmp = SYMBOLS[deviceType as SymbolKey];
+        
+        if (Cmp) {
+          deviceNodes.push(<Cmp key={`${circuit.id}-${deviceIdx}`} x={nodeData.x} y={nodeData.y} />);
+        }
+      });
+      
+      // Add endcap
+      const endcapNodeId = `circuit-${circuit.id}-endcap`;
+      const endcapNodeData = layoutData.nodes.get(endcapNodeId);
+      if (endcapNodeData) {
+        deviceNodes.push(<SYMBOLS.EOL key={`${circuit.id}-endcap`} x={endcapNodeData.x} y={endcapNodeData.y} />);
+      }
+    });
+  } else {
+    // Legacy format
+    deviceNodes = ((spec as { devices: Device[] }).devices).map((d: Device, idx: number) => {
+      const nodeData = layoutData.nodes.get(`device-${idx}`);
+      if (!nodeData) return null;
+      const Cmp = SYMBOLS[d.type as SymbolKey];
+      return Cmp ? <Cmp key={idx} x={nodeData.x} y={nodeData.y} /> : null;
+    }).filter(Boolean) as JSX.Element[];
+  }
 
   /* Circuit buses from ELK edges */
   const circuitPaths: React.ReactElement[] = [];
@@ -378,15 +410,17 @@ function Riser({
     }
   });
 
-  // Render EOL resistors from ELK layout
-  spec.circuits.forEach((circuit) => {
-    const eolNode = layoutData.nodes.get(`eol-${circuit.id}`);
-    if (eolNode) {
-      circuitPaths.push(
-        <SYMBOLS.EOL key={`eol-${circuit.id}`} x={eolNode.x} y={eolNode.y} />
-      );
-    }
-  });
+  // Render EOL resistors from ELK layout (legacy format only - DSL renders EOLs as devices)
+  if (!isDSLFormat) {
+    spec.circuits.forEach((circuit) => {
+      const eolNode = layoutData.nodes.get(`eol-${circuit.id}`);
+      if (eolNode) {
+        circuitPaths.push(
+          <SYMBOLS.EOL key={`eol-${circuit.id}`} x={eolNode.x} y={eolNode.y} />
+        );
+      }
+    });
+  }
 
   /* Debug overlay */
   const debugOverlay =
@@ -610,9 +644,9 @@ export default function App(): React.ReactElement {
     }
   }, [spec]);
 
-  const [currentLayoutData, setCurrentLayoutData] = useState<any>(null);
+  const [currentLayoutData, setCurrentLayoutData] = useState<Awaited<ReturnType<typeof layout>> | null>(null);
 
-  const handleLayoutData = useCallback((layoutData: any) => {
+  const handleLayoutData = useCallback((layoutData: Awaited<ReturnType<typeof layout>>) => {
     setCurrentLayoutData(layoutData);
   }, []);
 

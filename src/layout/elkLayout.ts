@@ -1,27 +1,25 @@
 import ELK from 'elkjs/lib/elk.bundled.js';
 
-const elk = new ELK();
-
-interface Device {
+export interface Device {
   type: string;
   circuit: string;
   x?: number;
   y?: number;
 }
 
-interface Circuit {
+export interface Circuit {
   id: string;
   class: string;
   color: string;
 }
 
-interface EOL {
+export interface EOL {
   circuit: string;
   x?: number;
   drop?: number;
 }
 
-interface LayoutSpec {
+export interface LayoutSpec {
   sheet: { title: string };
   panel?: { x: number; y: number };
   circuits: Circuit[];
@@ -31,7 +29,7 @@ interface LayoutSpec {
 
 interface ElkPort {
   id: string;
-  layoutOptions?: Record<string, any>;
+  layoutOptions?: Record<string, unknown>;
 }
 
 interface ElkNode {
@@ -41,7 +39,7 @@ interface ElkNode {
   x?: number;
   y?: number;
   labels?: Array<{ text: string }>;
-  layoutOptions?: Record<string, any>;
+  layoutOptions?: Record<string, unknown>;
   ports?: ElkPort[];
 }
 
@@ -62,7 +60,7 @@ interface ElkEdge {
 }
 
 
-interface LayoutResult {
+export interface LayoutResult {
   nodes: Map<string, { x: number; y: number; width: number; height: number }>;
   edges: Map<string, { 
     id: string;
@@ -165,7 +163,7 @@ export async function elkLayout(spec: LayoutSpec): Promise<LayoutResult> {
     let previousPort = panelPort;
     
     circuitDevices.forEach(({ id }, idx) => {
-      const edge: any = {
+      const edge: ElkEdge = {
         id: `${circuit.id}-${idx}`,
         sources: [previousNode],
         targets: [id],
@@ -226,9 +224,33 @@ export async function elkLayout(spec: LayoutSpec): Promise<LayoutResult> {
 
   console.log('Calling ELK layout with graph:', graph);
   
-  let layoutedGraph: any;
+  interface ElkLayoutNode {
+  id: string;
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
+}
+
+interface ElkLayoutEdge {
+  id: string;
+  sources?: string[];
+  targets?: string[];
+  sections?: Array<{
+    startPoint?: { x: number; y: number };
+    bendPoints?: Array<{ x: number; y: number }>;
+    endPoint?: { x: number; y: number };
+  }>;
+}
+
+interface ElkLayoutGraph {
+  children?: ElkLayoutNode[];
+  edges?: ElkLayoutEdge[];
+}
+
+let layoutedGraph: ElkLayoutGraph;
   try {
-    layoutedGraph = await elk.layout(graph as any);
+    layoutedGraph = await elk.layout(graph) as ElkLayoutGraph;
     console.log('ELK layout successful:', layoutedGraph);
   } catch (error) {
     console.error('ELK layout failed:', error);
@@ -242,7 +264,7 @@ export async function elkLayout(spec: LayoutSpec): Promise<LayoutResult> {
   };
 
   // Extract node positions from ELK results
-  layoutedGraph.children?.forEach((node: any) => {
+  layoutedGraph.children?.forEach((node: ElkLayoutNode) => {
     result.nodes.set(node.id, {
       x: node.x || 0,
       y: node.y || 0,
@@ -252,12 +274,16 @@ export async function elkLayout(spec: LayoutSpec): Promise<LayoutResult> {
   });
 
   // Extract edge routing from ELK results
-  layoutedGraph.edges?.forEach((edge: any) => {
+  layoutedGraph.edges?.forEach((edge: ElkLayoutEdge) => {
     const bendPoints: Array<{ x: number; y: number }> = [];
     
     // Add edge sections as bend points
     if (edge.sections && edge.sections.length > 0) {
-      edge.sections.forEach((section: any) => {
+      edge.sections.forEach((section: {
+        startPoint?: { x: number; y: number };
+        bendPoints?: Array<{ x: number; y: number }>;
+        endPoint?: { x: number; y: number };
+      }) => {
         if (section.startPoint) {
           bendPoints.push({ x: section.startPoint.x, y: section.startPoint.y });
         }

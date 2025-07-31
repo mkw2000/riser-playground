@@ -1,0 +1,38 @@
+{
+  "sheet": { "title": "FIRST FLOOR", "laneGap": 28 },
+  "panel": {
+    "id": "FACP",
+    "ports": [
+      { "id": "SLC",  "side": "WEST", "label": "SLC" },
+      { "id": "NAC1", "side": "EAST", "label": "NAC 1" }
+    ]
+  },
+  "circuits": [
+    {
+      "id": "SLC",
+      "from": { "panel": "FACP", "port": "SLC" },
+      "orientation": "WEST",
+      "spacing": 36,
+      "devices": [
+        { "type": "Smoke" }, { "type": "Smoke" }, { "type": "Pull" }
+      ],
+      "endcap": { "type": "EOL", "value": "75Ω" }
+    },
+    {
+      "id": "NAC1",
+      "from": { "panel": "FACP", "port": "NAC1" },
+      "orientation": "EAST",
+      "spacing": 36,
+      "devices": [
+        { "type": "HornStrobe" }, { "type": "HornStrobe" }
+      ],
+      "endcap": { "type": "EOL", "value": "75Ω" }
+    }
+  ],
+  "symbols": {
+    "Smoke":      { "w": 18, "h": 18 },
+    "Pull":       { "w": 14, "h": 14 },
+    "HornStrobe": { "w": 22, "h": 16 },
+    "EOL":        { "w": 18, "h": 12 }
+  }
+}
