@@ -85,9 +85,15 @@ const SYMBOL_SIZES: Record<string, { width: number; height: number }> = {
 
 export async function elkLayout(spec: LayoutSpec): Promise<LayoutResult> {
   console.log('elkLayout called with spec:', spec);
-  
+
   const nodes: ElkNode[] = [];
   const edges: ElkEdge[] = [];
+
+  // Map of circuit -> drop length (defaults to 4mm)
+  const eolDrops = new Map<string, number>();
+  spec.eols.forEach((eol) => {
+    eolDrops.set(eol.circuit, eol.drop ?? 4);
+  });
   
   // Add panel node with ports for different circuit sides
   const panelId = 'panel';
@@ -303,6 +309,21 @@ export async function elkLayout(spec: LayoutSpec): Promise<LayoutResult> {
       color: 'black',
       circuitId: circuitId,
     });
+  });
+
+  // Apply EOL drop offsets after layout
+  eolDrops.forEach((drop, circuitId) => {
+    const nodeId = `eol-${circuitId}`;
+    const node = result.nodes.get(nodeId);
+    const edge = result.edges.get(`${circuitId}-eol`);
+    if (node && edge) {
+      // Original end point before offset
+      const last = edge.bendPoints[edge.bendPoints.length - 1];
+      // Move EOL symbol downward
+      node.y += drop;
+      // Add vertical segment for drop wire
+      edge.bendPoints.push({ x: last.x, y: last.y + drop });
+    }
   });
 
   console.log('ELK layout completed with', result.nodes.size, 'nodes and', result.edges.size, 'edges');
