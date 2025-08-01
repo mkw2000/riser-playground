@@ -96,6 +96,9 @@ export async function elkLayout(spec: LayoutSpec): Promise<LayoutResult> {
     width: SYMBOL_SIZES.FACP.width,
     height: SYMBOL_SIZES.FACP.height,
     labels: [{ text: 'FACP' }],
+    layoutOptions: {
+      'elk.portConstraints': 'FIXED_SIDE'
+    },
     ports: [
       {
         id: 'panel-left',
@@ -154,10 +157,10 @@ export async function elkLayout(spec: LayoutSpec): Promise<LayoutResult> {
 
     // Determine which panel port to use based on circuit type
     let panelPort = 'panel-top'; // default
-    if (circuit.id.startsWith('NAC')) {
-      panelPort = 'panel-left';
-    } else if (circuit.id === 'SLC') {
+    if (circuit.id === 'SLC') {
       panelPort = 'panel-right';
+    } else if (circuit.id.startsWith('NAC')) {
+      panelPort = 'panel-left';
     }
 
     // Create series connection: Panel port -> Device1 -> Device2 -> ... -> EOL
@@ -174,6 +177,15 @@ export async function elkLayout(spec: LayoutSpec): Promise<LayoutResult> {
       // Add source port if this is the first connection from panel
       if (previousNode === panelId && previousPort) {
         edge.sourcePort = previousPort;
+        
+        // Add deterministic routing kick based on port side
+        const kick = panelPort === 'panel-left' ? -20 : 20;
+        edge.sections = [{ 
+          id: `${circuit.id}-${idx}-section-0`,
+          startPoint: { x: 0, y: 0 },
+          endPoint: { x: kick, y: 0 },
+          bendPoints: [{ x: kick, y: 0 }] 
+        }];
       }
       
       edges.push(edge);
@@ -219,6 +231,8 @@ export async function elkLayout(spec: LayoutSpec): Promise<LayoutResult> {
       'elk.spacing.edgeNode': '20',
       'elk.layered.crossingMinimization.strategy': 'LAYER_SWEEP',
       'elk.layered.nodePlacement.strategy': 'BRANDES_KOEPF',
+      'elk.edgeRouting': 'ORTHOGONAL',
+      'elk.layered.considerModelOrder.strategy': 'NODES_AND_EDGES',
     },
     children: nodes,
     edges: edges,
