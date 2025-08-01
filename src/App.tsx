@@ -10,6 +10,7 @@ import { elkLayout } from "./layout/elkLayout";
 // import { tscircuitLayout } from "./layout/tscircuitLayout";
 import jsPDF from "jspdf";
 import { svg2pdf } from "svg2pdf.js";
+import { convertSvgToDxf } from "./utils/svgToDxf";
 
 interface Device {
   type: string;
@@ -735,12 +736,10 @@ export default function App(): React.ReactElement {
         } else {
           // Try to parse error response
           let errorMessage = `HTTP ${response.status}`;
-          let errorDetails = null;
           try {
             const errorData = await response.json();
             console.error('Conversion failed:', errorData);
             errorMessage = errorData.error || errorData.message || errorMessage;
-            errorDetails = errorData.details;
             
             // Special handling for file size error
             if (errorData.status === 413 || response.status === 413) {
@@ -810,6 +809,42 @@ export default function App(): React.ReactElement {
     } catch (error) {
       console.error("Error exporting to DXF:", error);
       alert(`Export failed: ${error instanceof Error ? error.message : "Unknown error"}`);
+    }
+  }, [spec, currentLayoutData, generateSVGString]);
+
+  // Client-side SVG to DXF conversion
+  const exportToDXFClient = useCallback(() => {
+    if (!spec || !currentLayoutData) return;
+
+    try {
+      // Generate SVG string
+      const svgString = generateSVGString();
+      if (!svgString) {
+        alert("Failed to generate SVG");
+        return;
+      }
+
+      console.log('Converting SVG to DXF client-side...');
+      
+      // Convert SVG to DXF
+      const dxfContent = convertSvgToDxf(svgString);
+      
+      // Download the DXF file
+      const blob = new Blob([dxfContent], { type: 'application/dxf' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      const title = spec.sheet?.title || "Fire Riser Diagram";
+      link.download = `${title.replace(/\s+/g, "_")}_riser_diagram.dxf`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      
+      console.log('Client-side DXF conversion completed');
+    } catch (error) {
+      console.error('Client-side DXF conversion error:', error);
+      alert(`DXF conversion failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }, [spec, currentLayoutData, generateSVGString]);
 
@@ -1053,16 +1088,22 @@ export default function App(): React.ReactElement {
               Export to PDF
             </button>
             <button
-              onClick={exportToDXF}
+              onClick={exportToDXFClient}
               className="export-button bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg shadow-lg transition-colors duration-200 text-sm font-medium"
             >
-              Export to DXF (Vector Express)
+              Export to DXF
+            </button>
+            <button
+              onClick={exportToDXF}
+              className="export-button bg-yellow-600 hover:bg-yellow-700 text-white px-4 py-2 rounded-lg shadow-lg transition-colors duration-200 text-sm font-medium"
+            >
+              Export (Vector Express)
             </button>
             <button
               onClick={exportToDXFDirect}
               className="export-button bg-gray-600 hover:bg-gray-700 text-white px-4 py-2 rounded-lg shadow-lg transition-colors duration-200 text-sm font-medium"
             >
-              Export to DXF (Legacy)
+              Export (Legacy)
             </button>
           </div>
         )}
