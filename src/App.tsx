@@ -735,10 +735,35 @@ export default function App(): React.ReactElement {
         } else {
           // Try to parse error response
           let errorMessage = `HTTP ${response.status}`;
+          let errorDetails = null;
           try {
             const errorData = await response.json();
             console.error('Conversion failed:', errorData);
             errorMessage = errorData.error || errorData.message || errorMessage;
+            errorDetails = errorData.details;
+            
+            // Special handling for file size error
+            if (errorData.status === 413 || response.status === 413) {
+              alert(
+                "SVG file too large for Vector Express API\n\n" +
+                `File size: ${errorData.svgSize || svgString.length} bytes\n\n` +
+                "Options:\n" +
+                "1. Try the 'Export to DXF (Legacy)' button instead\n" +
+                "2. Simplify your diagram to reduce file size\n" +
+                "3. Download the SVG and convert manually at https://vector.express"
+              );
+              // Still download the SVG for manual conversion
+              const url = URL.createObjectURL(svgBlob);
+              const link = document.createElement("a");
+              link.href = url;
+              const title = spec.sheet?.title || "Fire Riser Diagram";
+              link.download = `${title.replace(/\s+/g, "_")}_riser_diagram.svg`;
+              document.body.appendChild(link);
+              link.click();
+              document.body.removeChild(link);
+              URL.revokeObjectURL(url);
+              return;
+            }
           } catch (e) {
             console.error('Failed to parse error response');
           }

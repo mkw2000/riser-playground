@@ -50,20 +50,43 @@ export default async function handler(req, res) {
     
     console.log('Using converter path:', bestOption.path);
 
-    // Step 3: Create form data for the conversion
-    const formData = new FormData();
-    const blob = new Blob([svg], { type: 'image/svg+xml' });
-    formData.append('file', blob, 'diagram.svg');
+    // Step 3: Try to optimize SVG by removing unnecessary whitespace and formatting
+    const optimizedSvg = svg
+      .replace(/\s+/g, ' ') // Replace multiple spaces with single space
+      .replace(/>\s+</g, '><') // Remove spaces between tags
+      .trim();
+    
+    console.log('Optimized SVG size:', optimizedSvg.length, 'bytes (was', svg.length, 'bytes)');
 
-    // Step 4: Convert the file
+    // Step 4: Create form data for the conversion
+    const FormData = (await import('form-data')).default;
+    const formData = new FormData();
+    formData.append('file', Buffer.from(optimizedSvg), {
+      filename: 'diagram.svg',
+      contentType: 'image/svg+xml'
+    });
+
+    // Step 5: Convert the file
     const convertResponse = await fetch(convertEndpoint, {
       method: 'POST',
-      body: formData
+      body: formData,
+      headers: formData.getHeaders()
     });
 
     if (!convertResponse.ok) {
       const errorText = await convertResponse.text();
       console.error('Conversion failed:', convertResponse.status, errorText);
+      
+      // Special handling for 413 error
+      if (convertResponse.status === 413) {
+        return res.status(400).json({ 
+          error: 'SVG file too large for Vector Express API', 
+          details: 'The SVG file is too large. Try simplifying the diagram or use the Legacy DXF export option.',
+          svgSize: optimizedSvg.length,
+          status: 413
+        });
+      }
+      
       return res.status(500).json({ 
         error: 'Conversion failed', 
         details: errorText,
@@ -78,7 +101,7 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: 'No file ID returned from conversion' });
     }
 
-    // Step 5: Download the converted file
+    // Step 6: Download the converted file
     const downloadUrl = `https://vector.express/api/v2/public/files/${convertResult.id}`;
     const downloadResponse = await fetch(downloadUrl);
 
