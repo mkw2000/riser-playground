@@ -10,8 +10,6 @@ import { elkLayout } from "./layout/elkLayout";
 // import { tscircuitLayout } from "./layout/tscircuitLayout";
 import jsPDF from "jspdf";
 import { svg2pdf } from "svg2pdf.js";
-// @ts-ignore
-import DxfWriter from "dxf-writer";
 
 interface Device {
   type: string;
@@ -628,7 +626,170 @@ export default function App(): React.ReactElement {
     setCurrentLayoutData(layoutData);
   }, []);
 
-  const exportToDXFBlocks = useCallback(() => {
+  // Helper function to generate SVG string from current diagram
+  const generateSVGString = useCallback(() => {
+    if (!spec || !currentLayoutData) return null;
+
+    const svgElement = document.querySelector("svg");
+    if (!svgElement) return null;
+
+    // Clone and clean the SVG
+    const svgClone = svgElement.cloneNode(true) as SVGSVGElement;
+    
+    // Remove UI elements
+    const uiElements = svgClone.querySelectorAll('.absolute, [class*="absolute"]');
+    uiElements.forEach(el => el.remove());
+
+    // Calculate bounds from layout data
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    currentLayoutData.nodes.forEach((node: any) => {
+      minX = Math.min(minX, node.x);
+      minY = Math.min(minY, node.y);
+      maxX = Math.max(maxX, node.x + node.width);
+      maxY = Math.max(maxY, node.y + node.height);
+    });
+
+    const padding = 50;
+    const width = maxX - minX + padding * 2;
+    const height = maxY - minY + padding * 2;
+
+    // Set proper dimensions and viewBox
+    svgClone.setAttribute("width", width.toString());
+    svgClone.setAttribute("height", height.toString());
+    svgClone.setAttribute("viewBox", `${minX - padding} ${minY - padding} ${width} ${height}`);
+    svgClone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+
+    // Remove any transform from the main group
+    const mainGroup = svgClone.querySelector('g[transform]');
+    if (mainGroup) {
+      mainGroup.removeAttribute('transform');
+    }
+
+    return new XMLSerializer().serializeToString(svgClone);
+  }, [spec, currentLayoutData]);
+
+  // New export function using Vector Express API
+  const exportToDXF = useCallback(async () => {
+    if (!spec || !currentLayoutData) return;
+
+    try {
+      // Generate SVG string
+      const svgString = generateSVGString();
+      if (!svgString) {
+        alert("Failed to generate SVG");
+        return;
+      }
+
+      // Create a blob from the SVG string
+      const svgBlob = new Blob([svgString], { type: "image/svg+xml" });
+      
+      try {
+        // Use Vercel function endpoint (works both locally and in production)
+        // Always use relative path - Vercel will handle it correctly
+        const endpoint = '/api/convert-svg-to-dxf';
+        
+        console.log('Attempting to convert SVG via Vector Express API...');
+        console.log('Endpoint:', endpoint);
+        console.log('SVG length:', svgString.length);
+        console.log('Current URL:', window.location.href);
+        
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ svg: svgString })
+        });
+
+        console.log('Response status:', response.status);
+
+        if (response.ok) {
+          const result = await response.json();
+          
+          if (result.success && result.dxf) {
+            // Convert base64 to blob
+            const byteCharacters = atob(result.dxf);
+            const byteNumbers = new Array(byteCharacters.length);
+            for (let i = 0; i < byteCharacters.length; i++) {
+              byteNumbers[i] = byteCharacters.charCodeAt(i);
+            }
+            const byteArray = new Uint8Array(byteNumbers);
+            const dxfBlob = new Blob([byteArray], { type: 'application/dxf' });
+            
+            // Download the DXF file
+            const url = URL.createObjectURL(dxfBlob);
+            const link = document.createElement("a");
+            link.href = url;
+            const title = spec.sheet?.title || "Fire Riser Diagram";
+            link.download = `${title.replace(/\s+/g, "_")}_riser_diagram.dxf`;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(url);
+            
+            console.log(`Successfully converted using ${result.converter} converter`);
+            return;
+          } else {
+            throw new Error('No DXF data received');
+          }
+        } else {
+          // Try to parse error response
+          let errorMessage = `HTTP ${response.status}`;
+          try {
+            const errorData = await response.json();
+            console.error('Conversion failed:', errorData);
+            errorMessage = errorData.error || errorData.message || errorMessage;
+          } catch (e) {
+            console.error('Failed to parse error response');
+          }
+          throw new Error(`Conversion failed: ${errorMessage}`);
+        }
+      } catch (conversionError: any) {
+        console.error('Vector Express conversion error:', conversionError);
+        console.error('Error details:', {
+          message: conversionError?.message || 'Unknown error',
+          stack: conversionError?.stack || 'No stack trace'
+        });
+        
+        // Fallback: Download SVG file with instructions
+        const isLocalhost = window.location.hostname === 'localhost';
+        const errorMessage = isLocalhost && window.location.port !== '3000'
+          ? "Vector Express API not available in local development.\n\n" +
+            "To test locally:\n" +
+            "1. Stop the current dev server (Ctrl+C)\n" +
+            "2. Run: npx vercel dev\n" +
+            "3. Open http://localhost:3000\n\n" +
+            "Or test on your deployed Vercel site.\n\n" +
+            "Downloading SVG file for manual conversion..."
+          : "Vector Express conversion service not available.\n\n" +
+            "Error: " + (conversionError?.message || 'Unknown error') + "\n\n" +
+            "To convert the SVG to DXF:\n" +
+            "1. Check the browser console for details\n" +
+            "2. Or manually upload the SVG file to https://vector.express\n\n" +
+            "Downloading SVG file for manual conversion...";
+        
+        alert(errorMessage);
+
+        // Download the SVG file
+        const url = URL.createObjectURL(svgBlob);
+        const link = document.createElement("a");
+        link.href = url;
+        const title = spec.sheet?.title || "Fire Riser Diagram";
+        link.download = `${title.replace(/\s+/g, "_")}_riser_diagram.svg`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+      }
+
+    } catch (error) {
+      console.error("Error exporting to DXF:", error);
+      alert(`Export failed: ${error instanceof Error ? error.message : "Unknown error"}`);
+    }
+  }, [spec, currentLayoutData, generateSVGString]);
+
+  // Keep the old DXF export as a fallback
+  const exportToDXFDirect = useCallback(() => {
     if (!spec || !currentLayoutData) return;
 
     try {
@@ -821,7 +982,7 @@ export default function App(): React.ReactElement {
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = `${title.replace(/\s+/g, "_")}_blocks_riser_diagram.dxf`;
+      link.download = `${title.replace(/\s+/g, "_")}_riser_diagram.dxf`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -867,10 +1028,16 @@ export default function App(): React.ReactElement {
               Export to PDF
             </button>
             <button
-              onClick={exportToDXFBlocks}
+              onClick={exportToDXF}
               className="export-button bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg shadow-lg transition-colors duration-200 text-sm font-medium"
             >
-              Export to DXF
+              Export to DXF (Vector Express)
+            </button>
+            <button
+              onClick={exportToDXFDirect}
+              className="export-button bg-gray-600 hover:bg-gray-700 text-white px-4 py-2 rounded-lg shadow-lg transition-colors duration-200 text-sm font-medium"
+            >
+              Export to DXF (Legacy)
             </button>
           </div>
         )}
